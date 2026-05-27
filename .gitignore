@@ -1,0 +1,12 @@
+# 2026/05/27 Steve Peng：新增原因：建立獨立台股分析 GUI 專案，避免提交執行產物與本機暫存檔。
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+env/
+reports/
+*.log
+.env
+.DS_Store
+Thumbs.db
