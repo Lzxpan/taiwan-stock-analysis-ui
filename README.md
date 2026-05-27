@@ -177,6 +177,183 @@ YYYY-MM-DD
 
 官方資料若欄位不足、網路失敗或端點異常，`auto` 模式會 fallback mock，不會假裝資料完整。
 
+## 分析結果的來源數據
+
+本工具的分析結果來自 `taiwan_market_core.py` 內的資料 provider。不同資料來源的欄位與可信度如下。
+
+### 1. Mock provider
+
+`mock` 是內建離線示範資料，不需要網路或 API key。主要用途是讓使用者第一次安裝後即可確認 GUI、報告、指定個股分析與下載功能是否正常。
+
+Mock provider 內建欄位包含：
+
+- 股票代號
+- 股票名稱
+- 市場別：`TWSE` 或 `TPEx`
+- 產業分類
+- 收盤價
+- 前一日收盤價
+- 日高 / 日低
+- 成交量
+- 成交金額
+- 5 日均線
+- 20 日均線
+- 60 日均線
+- 20 日均量
+- 外資買賣超估算
+- 投信買賣超估算
+- 自營商買賣超估算
+- 可用資料天數
+- ETF 標記
+- 全額交割 / 處置 / 異常標記
+- 事件風險
+- 歷史報酬序列，用於資訊型回測摘要
+
+Mock provider 的數據不是即時市場資料，僅用於功能展示、UI 驗證、離線測試與流程示範。
+
+### 2. Official provider
+
+`official` 會嘗試讀取官方 OpenAPI：
+
+- TWSE：`https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL`
+- TPEx：`https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes`
+
+目前 official provider 使用的主要欄位包含：
+
+- 股票代號
+- 股票名稱
+- 收盤價
+- 漲跌
+- 成交量
+- 成交金額
+- 最高價
+- 最低價
+- 市場別
+
+限制：
+
+- 官方日資料不一定包含完整產業分類。
+- 官方日資料不一定包含完整歷史均線。
+- 官方日資料不一定包含完整三大法人、MOPS 重大訊息、TDCC 籌碼、TAIFEX 衍生性商品資訊。
+- 若官方資料缺少歷史資料，工具會用有限欄位做保守估算，並在分析中保留風險提示。
+
+### 3. Auto provider
+
+`auto` 是預設資料來源：
+
+1. 先嘗試 official provider。
+2. 如果官方端點失敗、網路失敗、憑證失敗或資料不足，改用 mock provider。
+3. GUI 會在報告中顯示 `data_source_status`，說明是否 fallback。
+
+## 推斷理由與量化依據
+
+本工具的推斷不是主觀喊單，而是根據可解釋的量化欄位產生資訊型觀察結果。
+
+### 1. 股票池過濾
+
+強勢候選股排行榜會先排除不適合納入排行的標的：
+
+- 非 TWSE / TPEx 標的
+- ETF，除非使用者勾選 `納入 ETF`
+- 全額交割股
+- 處置股
+- 重大異常或警示標的
+- 可用資料天數不足
+- 成交量或成交金額過低
+- 價格、均線或均量資料不足
+
+指定個股分析不會直接排除該股票，而是會顯示「是否納入強勢排行股票池」與排除原因。
+
+### 2. 強勢分數
+
+強勢分數由下列項目加總：
+
+- `price_momentum`：價格動能，參考日漲跌幅、收盤價相對 20 日均線、20 日均線相對 60 日均線。
+- `volume_momentum`：量能動能，參考成交量相對 20 日均量。
+- `institutional_flow`：法人籌碼估算，參考外資、投信、自營商買賣超估算占成交金額比例。
+- `liquidity_quality`：流動性品質，參考成交金額。
+- `event_penalty`：事件風險扣分，若存在事件風險會扣分。
+
+分數越高代表量價與趨勢條件越強，但不代表可以買進。
+
+### 3. 信心分數
+
+信心分數主要依據：
+
+- 可用資料天數
+- 成交金額與流動性
+- 是否存在事件風險
+
+資料不足、流動性不足或事件風險偏高時，信心分數會降低。
+
+### 4. 風險等級
+
+風險等級分為 `Low`、`Medium`、`High`，依據包含：
+
+- 單日漲幅是否過大
+- 成交量是否異常放大
+- 成交金額是否偏低
+- 是否存在事件風險
+- 是否為處置、警示、全額交割或資料不足標的
+
+### 5. 觀察價位區間
+
+觀察價位是資訊型參考，不是買賣建議：
+
+- 觀察買入區間：以收盤價附近的保守區間估算。
+- 停損觀察價位：以收盤價與 20 日均線推估風險線。
+- 停利 / 賣出觀察區間：以收盤價上方區間做觀察參考。
+- 最大觀察部位比例：依風險等級與流動性調整。
+
+這些欄位只用於風險思考，不代表實際交易指令。
+
+## 開發、驗證與發布流程
+
+本專案建立時使用下列工作方式，方便後續維護者追溯分析結果與交付流程。
+
+### GitHub 方式
+
+- 使用 GitHub CLI 驗證登入狀態。
+- 建立新的獨立 repository：`Lzxpan/taiwan-stock-analysis-ui`。
+- 直接推送到 `main`，不使用 QuantDinger 原 repo 的功能分支。
+- 只提交獨立可執行檔案：
+  - `app.py`
+  - `taiwan_market_core.py`
+  - `run_taiwan_market_ui.cmd`
+  - `requirements.txt`
+  - `README.md`
+  - `tests/test_core.py`
+  - `docs/images/*.png`
+- 不提交 `reports/` 執行輸出資料。
+
+### Superpowers 方式
+
+開發流程採用可驗證的工程步驟：
+
+1. 先確認需求範圍：只保留可執行台股分析 GUI，不帶入原 QuantDinger 交易模組。
+2. 以測試保護核心功能：排行榜、指定個股分析、GUI callback 與 read-only 邊界。
+3. 在完成前執行驗證：
+   - `pytest -q`
+   - `python -m compileall app.py taiwan_market_core.py`
+4. 掃描交易執行相關字串，確認沒有新增 broker、order、live trading、paper trading 或買賣按鈕入口。
+5. 確認 README、截圖、啟動檔與 GitHub repo 都能對應到同一個可執行版本。
+
+### Chrome 方式
+
+使用 Chrome 驗證 GUI 實際畫面：
+
+1. 啟動本機 Gradio UI。
+2. 開啟 `http://127.0.0.1:7860` 或測試用 port。
+3. 點擊 `產生開盤前報告`，確認報告、排行榜、個股明細與下載檔顯示正常。
+4. 切換到 `指定個股分析` 分頁。
+5. 輸入 `2330`。
+6. 點擊 `產生指定個股分析`。
+7. 擷取畫面並保存到：
+   - `docs/images/home-pre-market.png`
+   - `docs/images/stock-analysis.png`
+
+README 中的截圖就是依上述流程由本機 UI 實際擷取，不是手繪示意圖。
+
 ## 測試
 
 ```bash
