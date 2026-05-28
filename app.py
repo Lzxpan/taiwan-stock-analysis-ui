@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import csv
+import html
 import json
 import os
 from datetime import datetime
@@ -25,9 +26,99 @@ from realtime_monitor import (
     WatchlistStore,
 )
 
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover - Python 3.9+ normally has zoneinfo.
+    ZoneInfo = None  # type: ignore[assignment]
+
 
 REPORT_DIR = Path(__file__).resolve().parent / "reports"
 WATCHLIST_PATH = Path(__file__).resolve().parent / "runtime" / "watchlists" / "realtime_monitor.json"
+MARKET_CLOSED_MESSAGE = "現在非台股一般交易時段（09:00-13:30），無法啟動即時監控。"
+
+CONTEXT_MENU_CSS = """
+.context-hidden { display: none !important; }
+.taiwan-realtime-table-wrap { overflow-x: auto; border: 1px solid #e5e7eb; border-radius: 8px; }
+.taiwan-realtime-table { width: 100%; border-collapse: collapse; min-width: 1480px; font-size: 13px; }
+.taiwan-realtime-table th { background: #f8fafc; color: #0f172a; text-align: left; padding: 8px; border-bottom: 1px solid #e5e7eb; white-space: nowrap; }
+.taiwan-realtime-table td { padding: 8px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
+.taiwan-realtime-table tr.trend-up { background: #fff1f2; }
+.taiwan-realtime-table tr.trend-down { background: #f0fdf4; }
+.taiwan-realtime-table tr.trend-flat { background: #ffffff; }
+.trend-up-text { color: #dc2626; font-weight: 700; }
+.trend-down-text { color: #16a34a; font-weight: 700; }
+.trend-flat-text { color: #334155; font-weight: 700; }
+.level-cell { white-space: normal; min-width: 260px; line-height: 1.55; }
+#taiwan-context-menu {
+  position: fixed; z-index: 99999; display: none; min-width: 190px;
+  background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px;
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.18); padding: 6px;
+}
+#taiwan-context-menu button {
+  width: 100%; border: 0; background: transparent; padding: 8px 10px;
+  text-align: left; cursor: pointer; color: #0f172a; font-size: 14px;
+}
+#taiwan-context-menu button:hover { background: #f1f5f9; }
+"""
+
+CONTEXT_MENU_JS = """
+() => {
+  const menu = document.createElement('div');
+  menu.id = 'taiwan-context-menu';
+  menu.innerHTML = `
+    <button data-action="monitor">加入即時監控</button>
+    <button data-action="analysis">指定個股分析</button>
+  `;
+  document.body.appendChild(menu);
+
+  const extractStock = () => {
+    const selection = String(window.getSelection ? window.getSelection() : '').trim();
+    if (selection) return selection;
+    const active = document.activeElement;
+    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) {
+      const value = active.value || '';
+      const selected = value.substring(active.selectionStart || 0, active.selectionEnd || 0).trim();
+      return selected || value.trim();
+    }
+    return '';
+  };
+
+  const setTextbox = (value) => {
+    const box = document.querySelector('#taiwan-context-stock textarea, #taiwan-context-stock input');
+    if (!box) return;
+    box.value = value;
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    box.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+
+  document.addEventListener('contextmenu', (event) => {
+    const text = extractStock();
+    if (!text || !/[0-9]{4,6}|[\\u4e00-\\u9fff]/.test(text)) return;
+    event.preventDefault();
+    setTextbox(text);
+    menu.style.display = 'block';
+    menu.style.left = `${event.clientX}px`;
+    menu.style.top = `${event.clientY}px`;
+  });
+
+  document.addEventListener('click', (event) => {
+    if (!menu.contains(event.target)) menu.style.display = 'none';
+  });
+
+  menu.addEventListener('click', (event) => {
+    const action = event.target && event.target.dataset ? event.target.dataset.action : '';
+    if (action === 'monitor') {
+      const btn = document.querySelector('#taiwan-context-add-monitor button');
+      if (btn) btn.click();
+    }
+    if (action === 'analysis') {
+      const btn = document.querySelector('#taiwan-context-stock-analysis button');
+      if (btn) btn.click();
+    }
+    menu.style.display = 'none';
+  });
+}
+"""
 
 
 def parse_date(value: str | None):
@@ -182,6 +273,50 @@ def generate_report_ui(report_type: str, provider_key: str, report_date: str, to
     return summary_markdown(report), table, detail_markdown(report.get("top_candidates") or []), risk_markdown(report), json_path, csv_path
 
 
+def generate_report_and_ranking_ui(report_type: str, provider_key: str, report_date: str, top_n: int, include_etf: bool):
+    """功能：產生報告並同步更新排行榜分頁。
+
+    2026/05/28 Steve Peng：修正原因：使用者回報強勢候選股排行榜分頁沒有內容。
+    修改前代碼：排行榜只存在報告分頁內，獨立分頁沒有資料來源。
+    修改後功能：按下開盤前/收盤後報告時，同步輸出排行榜表格與個股明細。
+    """
+    report_outputs = generate_report_ui(report_type, provider_key, report_date, top_n, include_etf)
+    summary, table, detail, _risk, json_path, csv_path = report_outputs
+    ranking_summary = "\n".join(
+        [
+            f"## 強勢候選股排行榜｜{report_type}",
+            f"> {TAIWAN_MARKET_DISCLAIMER}",
+            "",
+            f"- 已產生 {len(table)} 檔候選股。",
+            "- 可在此分頁直接檢視排行榜，或下載 JSON / CSV。",
+        ]
+    )
+    return (*report_outputs, ranking_summary, table, detail, json_path, csv_path)
+
+
+def generate_ranking_ui(provider_key: str, report_date: str, top_n: int, include_etf: bool):
+    """功能：Gradio callback，單獨產生強勢候選股排行榜。"""
+    report = TaiwanMarketService(create_provider(provider_key)).generate_report(
+        "pre_market",
+        top_n=int(top_n),
+        include_etf=bool(include_etf),
+        as_of=parse_date(report_date),
+    )
+    table = candidate_rows(report.get("top_candidates") or [])
+    json_path, csv_path = write_json_csv("taiwan_strength_ranking", report, table)
+    summary = "\n".join(
+        [
+            f"## 強勢候選股排行榜｜{report.get('report_date')}",
+            f"> {report.get('disclaimer') or TAIWAN_MARKET_DISCLAIMER}",
+            "",
+            f"- 資料來源：{report.get('provider')}",
+            f"- 今日大盤方向：{report.get('today_market_direction')}",
+            f"- 已產生 {len(table)} 檔候選股。",
+        ]
+    )
+    return summary, table, detail_markdown(report.get("top_candidates") or []), json_path, csv_path
+
+
 def generate_stock_analysis_ui(provider_key: str, query: str, report_date: str, include_etf: bool):
     """功能：Gradio callback，產生指定個股分析。"""
     analysis = TaiwanMarketService(create_provider(provider_key)).analyze_stock(query=query, include_etf=bool(include_etf), as_of=parse_date(report_date))
@@ -230,6 +365,57 @@ def realtime_rows(rows: Sequence[Dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(list(rows or []))
 
 
+def render_realtime_table_html(rows: Sequence[Dict[str, Any]]) -> str:
+    """功能：將即時行情資料轉為帶有紅綠趨勢標示的 HTML 表格。
+
+    2026/05/28 Steve Peng：修正原因：DataFrame 無法明確標出漲跌色彩，也不適合長五檔文字。
+    修改前代碼：直接用 Gradio Dataframe 顯示，買一到買五與賣一到賣五不易閱讀。
+    修改後功能：使用 HTML 表格顯示趨勢文字與紅/綠列底色，並保留所有 read-only 資訊。
+    """
+    rows = list(rows or [])
+    if not rows:
+        return "<p>尚無即時行情資料。請先加入監控股票，並於台股開盤時間刷新。</p>"
+
+    columns = [
+        "代號",
+        "名稱",
+        "市場",
+        "時間",
+        "最新價",
+        "漲跌幅%",
+        "趨勢",
+        "即時成交量",
+        "累積成交量",
+        "買一到買五價量",
+        "賣一到賣五價量",
+        "委買總金額",
+        "委賣總金額",
+        "委買委賣比",
+        "價差",
+        "資料來源",
+        "可信度",
+        "資料備註",
+        "分析狀態",
+        "警示訊息",
+    ]
+    header = "".join(f"<th>{html.escape(column)}</th>" for column in columns)
+    body: list[str] = []
+    for row in rows:
+        change_pct = float(row.get("漲跌幅%") or 0)
+        row_class = "trend-up" if change_pct > 0 else "trend-down" if change_pct < 0 else "trend-flat"
+        trend_class = "trend-up-text" if change_pct > 0 else "trend-down-text" if change_pct < 0 else "trend-flat-text"
+        cells: list[str] = []
+        for column in columns:
+            value = row.get(column, "")
+            text = html.escape(str(value))
+            class_name = "level-cell" if column in {"買一到買五價量", "賣一到賣五價量"} else ""
+            if column == "趨勢":
+                text = f"<span class=\"{trend_class}\">{text}</span>"
+            cells.append(f"<td class=\"{class_name}\">{text}</td>")
+        body.append(f"<tr class=\"{row_class}\">{''.join(cells)}</tr>")
+    return f"<div class=\"taiwan-realtime-table-wrap\"><table class=\"taiwan-realtime-table\"><thead><tr>{header}</tr></thead><tbody>{''.join(body)}</tbody></table></div>"
+
+
 def format_realtime_alerts(alerts: Sequence[Dict[str, Any]]) -> str:
     """功能：將即時警示紀錄轉為 Markdown。"""
     lines = ["## 即時警示紀錄", f"> {TAIWAN_MARKET_DISCLAIMER}", ""]
@@ -259,11 +445,17 @@ def monitor_remove_symbol_ui(provider_key: str, symbol: str):
 def monitor_clear_watchlist_ui(provider_key: str):
     """功能：Gradio callback，清空即時監控清單。"""
     result = create_realtime_monitor_service(provider_key).clear_watchlist()
-    return result.get("message", ""), watchlist_rows(result.get("items") or []), format_realtime_alerts([])
+    return result.get("message", ""), watchlist_rows(result.get("items") or []), render_realtime_table_html([]), format_realtime_alerts([])
 
 
 def monitor_refresh_ui(provider_key: str):
     """功能：Gradio callback，刷新即時行情與警示紀錄。"""
+    if not is_taiwan_market_open_now():
+        return (
+            f"{MARKET_CLOSED_MESSAGE}｜目前時間：{_now_taipei_text()}｜監控狀態：停止監控中。",
+            render_realtime_table_html([]),
+            format_realtime_alerts([]),
+        )
     result = create_realtime_monitor_service(provider_key).refresh()
     status = result.get("source_status") or {}
     status_text = (
@@ -273,7 +465,58 @@ def monitor_refresh_ui(provider_key: str):
     alerts = result.get("alerts") or []
     if alerts:
         gr.Warning(str(alerts[-1].get("message") or "即時監控警示"))
-    return status_text, realtime_rows(result.get("rows") or []), format_realtime_alerts(alerts)
+    return status_text, render_realtime_table_html(result.get("rows") or []), format_realtime_alerts(alerts)
+
+
+def monitor_refresh_state_ui(provider_key: str, is_monitoring: bool):
+    """功能：Timer callback，只有監控啟動且在開盤時間內才刷新。"""
+    if not is_monitoring:
+        return "目前狀態：停止監控中。", render_realtime_table_html([]), format_realtime_alerts([])
+    return monitor_refresh_ui(provider_key)
+
+
+def monitor_start_ui():
+    """功能：啟動 30 秒即時監控；非開盤時間顯示提示且不啟動 timer。"""
+    if not is_taiwan_market_open_now():
+        return gr.update(active=False), False, f"{MARKET_CLOSED_MESSAGE}｜目前時間：{_now_taipei_text()}"
+    return gr.update(active=True), True, f"目前狀態：即時監控中，每 30 秒更新一次。｜啟動時間：{_now_taipei_text()}"
+
+
+def monitor_stop_ui():
+    """功能：停止 30 秒即時監控。"""
+    return gr.update(active=False), False, f"目前狀態：停止監控中。｜停止時間：{_now_taipei_text()}"
+
+
+def context_add_monitor_ui(provider_key: str, query: str):
+    """功能：右鍵選單 callback，把選取的股票代號或名稱加入監控清單。"""
+    return monitor_add_symbol_ui(provider_key, query)
+
+
+def context_stock_analysis_ui(provider_key: str, query: str, report_date: str, include_etf: bool):
+    """功能：右鍵選單 callback，把選取文字送入指定個股分析。"""
+    markdown, json_path = generate_stock_analysis_ui(provider_key, query, report_date, include_etf)
+    return query, markdown, json_path
+
+
+def is_taiwan_market_open_now(now: datetime | None = None) -> bool:
+    """功能：判斷目前是否為台股一般交易時段。
+
+    使用說明：只用於 UI 監控提示，不代表完整休市日曆；週一至週五 09:00-13:30 視為可監控。
+    """
+    if ZoneInfo is not None:
+        current = now or datetime.now(ZoneInfo("Asia/Taipei"))
+    else:
+        current = now or datetime.now()
+    if current.weekday() >= 5:
+        return False
+    return (current.hour, current.minute) >= (9, 0) and (current.hour, current.minute) <= (13, 30)
+
+
+def _now_taipei_text() -> str:
+    """功能：取得 Asia/Taipei 目前時間文字。"""
+    if ZoneInfo is not None:
+        return datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def create_app():
@@ -304,6 +547,14 @@ def create_app():
             with gr.Row():
                 post_json = gr.File(label="下載 JSON")
                 post_csv = gr.File(label="下載 CSV")
+        with gr.Tab("強勢候選股排行榜 / 個股明細"):
+            ranking_btn = gr.Button("產生強勢候選股排行榜", variant="primary")
+            ranking_summary = gr.Markdown("尚未產生排行榜。請按上方按鈕，或先在開盤前/收盤後分頁產生報告。")
+            ranking_table = gr.Dataframe(label="強勢候選股排行榜", wrap=True)
+            ranking_detail = gr.Markdown()
+            with gr.Row():
+                ranking_json = gr.File(label="下載 JSON")
+                ranking_csv = gr.File(label="下載 CSV")
         with gr.Tab("指定個股分析"):
             stock_query = gr.Textbox(label="股票名稱或代號", placeholder="例如：2330 或 台積電")
             stock_btn = gr.Button("產生指定個股分析", variant="primary")
@@ -318,6 +569,7 @@ def create_app():
                 f"> {TAIWAN_MARKET_DISCLAIMER}。本分頁僅顯示公開市場資訊、買入觀察、賣出觀察與風險警示。"
             )
             monitor_timer = gr.Timer(value=30, active=False)
+            monitor_active = gr.State(False)
             with gr.Row():
                 monitor_query = gr.Textbox(label="新增監控股票（代號或名稱）", placeholder="例如：2330 或 台積電")
                 monitor_remove_symbol = gr.Textbox(label="移除代號", placeholder="例如：2330")
@@ -330,7 +582,7 @@ def create_app():
                 monitor_refresh_btn = gr.Button("立即刷新")
             monitor_status = gr.Markdown("尚未開始監控。")
             monitor_watchlist = gr.Dataframe(value=watchlist_rows(create_realtime_monitor_service("mock").load_watchlist()), label="監控清單（最多 50 檔）", wrap=True)
-            monitor_table = gr.Dataframe(label="即時行情與分析", wrap=True)
+            monitor_table = gr.HTML(value=render_realtime_table_html([]), label="即時行情與分析")
             monitor_alerts = gr.Markdown(format_realtime_alerts([]))
         with gr.Tab("回測摘要"):
             days = gr.Slider(5, 180, value=60, step=1, label="回測天數")
@@ -340,16 +592,31 @@ def create_app():
             with gr.Row():
                 backtest_json = gr.File(label="下載 JSON")
                 backtest_csv = gr.File(label="下載 CSV")
-        pre_btn.click(lambda p, d, t, e: generate_report_ui("開盤前", p, d, t, e), inputs=[provider, date_box, top_n, include_etf], outputs=[pre_summary, pre_table, pre_detail, pre_risk, pre_json, pre_csv])
-        post_btn.click(lambda p, d, t, e: generate_report_ui("收盤後", p, d, t, e), inputs=[provider, date_box, top_n, include_etf], outputs=[post_summary, post_table, post_detail, post_risk, post_json, post_csv])
+        context_stock = gr.Textbox(visible=False, elem_id="taiwan-context-stock", elem_classes=["context-hidden"])
+        context_add_btn = gr.Button("右鍵加入即時監控", visible=False, elem_id="taiwan-context-add-monitor", elem_classes=["context-hidden"])
+        context_analysis_btn = gr.Button("右鍵指定個股分析", visible=False, elem_id="taiwan-context-stock-analysis", elem_classes=["context-hidden"])
+
+        pre_btn.click(
+            lambda p, d, t, e: generate_report_and_ranking_ui("開盤前", p, d, t, e),
+            inputs=[provider, date_box, top_n, include_etf],
+            outputs=[pre_summary, pre_table, pre_detail, pre_risk, pre_json, pre_csv, ranking_summary, ranking_table, ranking_detail, ranking_json, ranking_csv],
+        )
+        post_btn.click(
+            lambda p, d, t, e: generate_report_and_ranking_ui("收盤後", p, d, t, e),
+            inputs=[provider, date_box, top_n, include_etf],
+            outputs=[post_summary, post_table, post_detail, post_risk, post_json, post_csv, ranking_summary, ranking_table, ranking_detail, ranking_json, ranking_csv],
+        )
+        ranking_btn.click(generate_ranking_ui, inputs=[provider, date_box, top_n, include_etf], outputs=[ranking_summary, ranking_table, ranking_detail, ranking_json, ranking_csv])
         stock_btn.click(generate_stock_analysis_ui, inputs=[provider, stock_query, date_box, include_etf], outputs=[stock_md, stock_json])
         monitor_add_btn.click(monitor_add_symbol_ui, inputs=[provider, monitor_query], outputs=[monitor_status, monitor_watchlist])
         monitor_remove_btn.click(monitor_remove_symbol_ui, inputs=[provider, monitor_remove_symbol], outputs=[monitor_status, monitor_watchlist])
-        monitor_clear_btn.click(monitor_clear_watchlist_ui, inputs=[provider], outputs=[monitor_status, monitor_watchlist, monitor_alerts])
+        monitor_clear_btn.click(monitor_clear_watchlist_ui, inputs=[provider], outputs=[monitor_status, monitor_watchlist, monitor_table, monitor_alerts])
         monitor_refresh_btn.click(monitor_refresh_ui, inputs=[provider], outputs=[monitor_status, monitor_table, monitor_alerts])
-        monitor_timer.tick(monitor_refresh_ui, inputs=[provider], outputs=[monitor_status, monitor_table, monitor_alerts], show_progress="hidden")
-        monitor_start_btn.click(lambda: gr.update(active=True), inputs=None, outputs=monitor_timer)
-        monitor_stop_btn.click(lambda: gr.update(active=False), inputs=None, outputs=monitor_timer)
+        monitor_timer.tick(monitor_refresh_state_ui, inputs=[provider, monitor_active], outputs=[monitor_status, monitor_table, monitor_alerts], show_progress="hidden")
+        monitor_start_btn.click(monitor_start_ui, inputs=None, outputs=[monitor_timer, monitor_active, monitor_status])
+        monitor_stop_btn.click(monitor_stop_ui, inputs=None, outputs=[monitor_timer, monitor_active, monitor_status])
+        context_add_btn.click(context_add_monitor_ui, inputs=[provider, context_stock], outputs=[monitor_status, monitor_watchlist])
+        context_analysis_btn.click(context_stock_analysis_ui, inputs=[provider, context_stock, date_box, include_etf], outputs=[stock_query, stock_md, stock_json])
         backtest_btn.click(generate_backtest_ui, inputs=[provider, top_n, include_etf, days], outputs=[backtest_md, backtest_table, backtest_json, backtest_csv])
     return demo
 
@@ -360,4 +627,12 @@ if __name__ == "__main__":
     # 修改前代碼：固定 server_port=7860，遇到 port occupied 會直接啟動失敗。
     # 修改後功能：預設仍使用 7860；可設定 GRADIO_SERVER_PORT=7865 等其他 port。
     server_port = int(os.getenv("GRADIO_SERVER_PORT", "7860"))
-    create_app().launch(server_name="127.0.0.1", server_port=server_port, inbrowser=True, allowed_paths=[str(REPORT_DIR)], show_error=True)
+    create_app().launch(
+        server_name="127.0.0.1",
+        server_port=server_port,
+        inbrowser=True,
+        allowed_paths=[str(REPORT_DIR)],
+        show_error=True,
+        css=CONTEXT_MENU_CSS,
+        js=CONTEXT_MENU_JS,
+    )

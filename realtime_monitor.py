@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -391,6 +391,7 @@ class RealtimeMonitorService:
         items = self.load_watchlist()
         symbols = [item["symbol"] for item in items]
         quotes = self.quote_provider.get_quotes(symbols) if symbols else {}
+        last_quote_cache = self._load_last_quote_cache()
         rows: List[Dict[str, Any]] = []
         alerts: List[Dict[str, Any]] = []
         for item in items:
@@ -398,10 +399,15 @@ class RealtimeMonitorService:
             quote = quotes.get(symbol)
             if quote is None:
                 quote = MockRealtimeQuoteProvider().get_quotes([symbol])[symbol]
+            # 2026/05/28 Steve Peng：修正原因：非逐筆更新或官方欄位暫缺時，最新價與即時成交量可能短暫回 0。
+            # 修改前代碼：UI 會直接顯示 0，造成使用者誤判最新一筆成交資料已消失。
+            # 修改後功能：沿用上一筆有效最新價/成交量並標示資料備註，僅作資訊呈現。
+            quote, data_note = self._apply_last_valid_quote(symbol, quote, last_quote_cache)
             analysis = self.analysis_service.analyze_stock(symbol)
-            row, row_alerts = self._build_row(item, quote, analysis)
+            row, row_alerts = self._build_row(item, quote, analysis, data_note=data_note)
             rows.append(row)
             alerts.extend(row_alerts)
+        self._save_last_quote_cache(last_quote_cache)
         return {
             "disclaimer": TAIWAN_MARKET_DISCLAIMER,
             "updated_at": self._now_text(),
@@ -427,7 +433,7 @@ class RealtimeMonitorService:
             return {"symbol": clean_symbol, "name": clean_symbol, "market": ""}
         return None
 
-    def _build_row(self, item: Dict[str, str], quote: RealtimeQuote, analysis: Dict[str, Any]):
+    def _build_row(self, item: Dict[str, str], quote: RealtimeQuote, analysis: Dict[str, Any], data_note: str = ""):
         observation = analysis.get("observation_reference") or {}
         messages = self._observation_messages(quote, observation)
         messages.extend(self._risk_messages(quote, analysis))
@@ -439,16 +445,38 @@ class RealtimeMonitorService:
             "時間": quote.timestamp,
             "最新價": quote.last_price,
             "漲跌幅%": quote.change_pct,
+            "趨勢": self._trend_label(quote.change_pct),
             "即時成交量": quote.latest_volume,
             "累積成交量": quote.accumulated_volume,
-            "買一到買五價量": self._levels_text(quote.bid_prices, quote.bid_volumes),
-            "賣一到賣五價量": self._levels_text(quote.ask_prices, quote.ask_volumes),
+            "買一到買五價量": self._levels_text(quote.bid_prices, quote.bid_volumes, "買"),
+            "賣一到賣五價量": self._levels_text(quote.ask_prices, quote.ask_volumes, "賣"),
+            "買一價": self._level_value(quote.bid_prices, 0),
+            "買一量": self._level_value(quote.bid_volumes, 0),
+            "買二價": self._level_value(quote.bid_prices, 1),
+            "買二量": self._level_value(quote.bid_volumes, 1),
+            "買三價": self._level_value(quote.bid_prices, 2),
+            "買三量": self._level_value(quote.bid_volumes, 2),
+            "買四價": self._level_value(quote.bid_prices, 3),
+            "買四量": self._level_value(quote.bid_volumes, 3),
+            "買五價": self._level_value(quote.bid_prices, 4),
+            "買五量": self._level_value(quote.bid_volumes, 4),
+            "賣一價": self._level_value(quote.ask_prices, 0),
+            "賣一量": self._level_value(quote.ask_volumes, 0),
+            "賣二價": self._level_value(quote.ask_prices, 1),
+            "賣二量": self._level_value(quote.ask_volumes, 1),
+            "賣三價": self._level_value(quote.ask_prices, 2),
+            "賣三量": self._level_value(quote.ask_volumes, 2),
+            "賣四價": self._level_value(quote.ask_prices, 3),
+            "賣四量": self._level_value(quote.ask_volumes, 3),
+            "賣五價": self._level_value(quote.ask_prices, 4),
+            "賣五量": self._level_value(quote.ask_volumes, 4),
             "委買總金額": quote.bid_value_total,
             "委賣總金額": quote.ask_value_total,
             "委買委賣比": quote.bid_ask_ratio,
             "價差": quote.spread,
             "資料來源": quote.source,
             "可信度": quote.quality,
+            "資料備註": data_note or quote.message,
             "分析狀態": status,
             "警示訊息": status,
         }
@@ -498,9 +526,85 @@ class RealtimeMonitorService:
         return messages
 
     @staticmethod
-    def _levels_text(prices: Sequence[float], volumes: Sequence[int]) -> str:
-        values = [f"{price:g} / {volume}" for price, volume in zip(prices[:5], volumes[:5])]
+    def _levels_text(prices: Sequence[float], volumes: Sequence[int], side: str) -> str:
+        """功能：用清楚中文標籤顯示五檔價量，避免使用者看不出斜線代表價格或張數。"""
+        labels = ("一", "二", "三", "四", "五")
+        values = [f"{side}{labels[idx]} 價 {price:g} / 量 {volume}張" for idx, (price, volume) in enumerate(zip(prices[:5], volumes[:5]))]
         return "；".join(values)
+
+    @staticmethod
+    def _level_value(values: Sequence[Any], index: int) -> Any:
+        """功能：安全讀取五檔價量單一欄位，欄位不足時回傳空白。"""
+        return values[index] if index < len(values) else ""
+
+    @staticmethod
+    def _trend_label(change_pct: float) -> str:
+        """功能：把漲跌幅轉為 UI 可讀趨勢文字。"""
+        if change_pct > 0:
+            return "上漲"
+        if change_pct < 0:
+            return "下跌"
+        return "平盤"
+
+    def _quote_cache_path(self) -> Path:
+        """功能：取得最後有效即時資料快取路徑，與 watchlist 放在同一個 runtime 目錄。"""
+        return self.watchlist_store.path.with_name("realtime_last_quotes.json")
+
+    def _load_last_quote_cache(self) -> Dict[str, Dict[str, Any]]:
+        """功能：讀取最後有效最新價與即時成交量快取。"""
+        path = self._quote_cache_path()
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _save_last_quote_cache(self, cache: Dict[str, Dict[str, Any]]) -> None:
+        """功能：寫入最後有效即時資料快取；只保存公開行情欄位，不保存任何交易資訊。"""
+        path = self._quote_cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _apply_last_valid_quote(
+        self,
+        symbol: str,
+        quote: RealtimeQuote,
+        cache: Dict[str, Dict[str, Any]],
+    ) -> tuple[RealtimeQuote, str]:
+        """功能：當官方即時欄位短暫缺漏時沿用最後有效最新價與即時成交量。
+
+        使用說明：若本次行情有有效值，會更新快取；若本次為 0 但快取有上一筆有效值，UI 顯示上一筆並加註低可信度。
+        """
+        previous = cache.get(symbol) or {}
+        last_price = quote.last_price
+        latest_volume = quote.latest_volume
+        notes: List[str] = []
+
+        if last_price <= 0 and float(previous.get("last_price") or 0) > 0:
+            last_price = float(previous["last_price"])
+            notes.append("最新價沿用上一筆有效資料")
+        if latest_volume <= 0 and int(previous.get("latest_volume") or 0) > 0:
+            latest_volume = int(previous["latest_volume"])
+            notes.append("即時成交量沿用上一筆有效資料")
+
+        if quote.last_price > 0 or quote.latest_volume > 0:
+            cache[symbol] = {
+                "last_price": quote.last_price if quote.last_price > 0 else last_price,
+                "latest_volume": quote.latest_volume if quote.latest_volume > 0 else latest_volume,
+                "timestamp": quote.timestamp,
+            }
+
+        if notes:
+            quote = replace(
+                quote,
+                last_price=last_price,
+                latest_volume=latest_volume,
+                quality="low_confidence",
+                message="；".join(notes),
+            )
+        return quote, "；".join(notes)
 
     def _source_status(self) -> Dict[str, Any]:
         if hasattr(self.quote_provider, "status"):

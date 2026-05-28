@@ -5,8 +5,22 @@
 from __future__ import annotations
 
 from taiwan_market_core import MockTaiwanMarketProvider, TAIWAN_MARKET_DISCLAIMER, TaiwanMarketService
+from datetime import datetime
+
+from taiwan_market_core import MockTaiwanMarketProvider, TAIWAN_MARKET_DISCLAIMER, TaiwanMarketService
 from realtime_monitor import MockRealtimeQuoteProvider, RealtimeMonitorService, TwseMisRealtimeProvider, WatchlistStore
-from app import generate_report_ui, generate_stock_analysis_ui, monitor_add_symbol_ui, monitor_clear_watchlist_ui, monitor_refresh_ui
+from app import (
+    generate_ranking_ui,
+    generate_report_ui,
+    generate_stock_analysis_ui,
+    is_taiwan_market_open_now,
+    monitor_add_symbol_ui,
+    monitor_clear_watchlist_ui,
+    monitor_refresh_ui,
+    monitor_start_ui,
+    monitor_stop_ui,
+    render_realtime_table_html,
+)
 
 
 def test_rank_candidates_and_report_are_read_only():
@@ -54,6 +68,24 @@ def test_gradio_callbacks_write_download_files(tmp_path, monkeypatch):
     assert stock_json
 
 
+def test_ranking_ui_outputs_candidates(tmp_path, monkeypatch):
+    """功能：確認獨立強勢候選股排行榜分頁可直接產生內容。
+
+    2026/05/28 Steve Peng：修正原因：使用者回報排行榜分頁沒有內容。
+    修改前代碼：只能在開盤前或收盤後報告內看到排行榜。
+    修改後功能：新增獨立排行榜 callback，並輸出 JSON/CSV。
+    """
+    monkeypatch.setattr("app.REPORT_DIR", tmp_path)
+
+    summary, table, detail, json_path, csv_path = generate_ranking_ui("mock", "", 20, False)
+
+    assert "強勢候選股排行榜" in summary
+    assert len(table) == 20
+    assert "個股明細" in detail
+    assert json_path
+    assert csv_path
+
+
 def test_twse_mis_fixture_and_realtime_monitor_alerts(tmp_path):
     """功能：驗證即時行情 fixture、五檔價量、監控清單與買入觀察警示。
 
@@ -96,21 +128,96 @@ def test_twse_mis_fixture_and_realtime_monitor_alerts(tmp_path):
     assert service.add_symbol("9999")["status"] == "limit_reached"
     row = service.refresh()["rows"][0]
     assert "買入觀察" in row["警示訊息"]
+    assert row["買一到買五價量"].startswith("買一 價")
+    assert row["買一價"] == 59.5
+    assert row["賣一量"] == 50
+    assert row["趨勢"] == "上漲"
+
+
+def test_realtime_monitor_keeps_last_valid_price_and_volume(tmp_path):
+    """功能：確認官方即時資料短暫回 0 時，UI 保留上一筆有效最新價與即時成交量。"""
+    store = WatchlistStore(tmp_path / "realtime_monitor.json")
+    first = RealtimeMonitorService(
+        quote_provider=MockRealtimeQuoteProvider(overrides={"2330": {"last_price": 612.0, "latest_volume": 88}}),
+        analysis_service=TaiwanMarketService(MockTaiwanMarketProvider()),
+        watchlist_store=store,
+    )
+    assert first.add_symbol("2330")["status"] == "added"
+    first.refresh()
+
+    second = RealtimeMonitorService(
+        quote_provider=MockRealtimeQuoteProvider(overrides={"2330": {"last_price": 0.0, "latest_volume": 0, "quality": "low_confidence"}}),
+        analysis_service=TaiwanMarketService(MockTaiwanMarketProvider()),
+        watchlist_store=store,
+    )
+    row = second.refresh()["rows"][0]
+
+    assert row["最新價"] == 612.0
+    assert row["即時成交量"] == 88
+    assert "沿用上一筆有效資料" in row["資料備註"]
+
+
+def test_realtime_html_marks_trend_with_color_class():
+    """功能：確認即時行情 HTML 用紅綠 class 與文字標示漲跌趨勢。"""
+    html = render_realtime_table_html(
+        [
+            {"代號": "2330", "名稱": "台積電", "漲跌幅%": 1.2, "趨勢": "上漲", "買一到買五價量": "買一 價 600 / 量 10張", "賣一到賣五價量": "賣一 價 601 / 量 8張"},
+            {"代號": "2454", "名稱": "聯發科", "漲跌幅%": -0.8, "趨勢": "下跌", "買一到買五價量": "買一 價 1000 / 量 3張", "賣一到賣五價量": "賣一 價 1005 / 量 2張"},
+        ]
+    )
+
+    assert "trend-up" in html
+    assert "trend-down" in html
+    assert "trend-up-text" in html
+    assert "trend-down-text" in html
+    assert "上漲" in html
+    assert "下跌" in html
+    assert "買一 價 600 / 量 10張" in html
 
 
 def test_realtime_monitor_ui_callbacks(tmp_path, monkeypatch):
     """功能：確認 Gradio 即時監控 callback 可新增、刷新與清空。"""
     monkeypatch.setattr("app.WATCHLIST_PATH", tmp_path / "realtime_monitor.json")
+    monkeypatch.setattr("app.is_taiwan_market_open_now", lambda: True)
 
     status, watchlist = monitor_add_symbol_ui("mock", "2330")
     refresh_status, rows, alerts = monitor_refresh_ui("mock")
-    clear_status, cleared, cleared_alerts = monitor_clear_watchlist_ui("mock")
+    clear_status, cleared, cleared_table, cleared_alerts = monitor_clear_watchlist_ui("mock")
 
     assert "已加入" in status
     assert len(watchlist) == 1
     assert "更新時間" in refresh_status
-    assert len(rows) == 1
+    assert "taiwan-realtime-table" in rows
+    assert "2330" in rows
+    assert "上漲" in rows
     assert "非投資建議" in alerts
     assert "已清空" in clear_status
     assert len(cleared) == 0
+    assert "尚無即時行情資料" in cleared_table
     assert "尚無警示" in cleared_alerts
+
+
+def test_market_hours_gate_and_monitor_status(monkeypatch):
+    """功能：確認非開盤時間無法啟動即時監控，並顯示停止/監控狀態。"""
+    assert is_taiwan_market_open_now(datetime(2026, 5, 28, 9, 30)) is True
+    assert is_taiwan_market_open_now(datetime(2026, 5, 28, 14, 0)) is False
+
+    monkeypatch.setattr("app.is_taiwan_market_open_now", lambda: False)
+    start_timer, active, status = monitor_start_ui()
+    refresh_status, refresh_html, _alerts = monitor_refresh_ui("mock")
+    assert start_timer["active"] is False
+    assert active is False
+    assert "非台股一般交易時段" in status
+    assert "無法啟動即時監控" in refresh_status
+    assert "停止監控中" in refresh_status
+    assert "尚無即時行情資料" in refresh_html
+
+    monkeypatch.setattr("app.is_taiwan_market_open_now", lambda: True)
+    start_timer, active, status = monitor_start_ui()
+    stop_timer, stopped_active, stop_status = monitor_stop_ui()
+    assert start_timer["active"] is True
+    assert active is True
+    assert "即時監控中" in status
+    assert stop_timer["active"] is False
+    assert stopped_active is False
+    assert "停止監控中" in stop_status
