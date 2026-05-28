@@ -103,6 +103,15 @@ python app.py
 - 最新價與即時成交量保留上一筆有效資料。
 - 頁面右鍵選單：加入即時監控、指定個股分析。
 
+### 右鍵選單狀態
+
+2026/05/28 Steve Peng：修正右鍵加入即時監控。
+修改原因：`visible=False` 的 Gradio 橋接元件不會保留可點擊 DOM，JavaScript 找不到目標按鈕時，右鍵 `加入即時監控` 看起來會無效。
+修改前狀態：右鍵選單會顯示，但點擊後可能沒有寫入 `runtime/watchlists/realtime_monitor.json`，也不會更新監控清單。
+修改後狀態：右鍵選單會直接切到目標分頁、填入對應 textbox，並點擊已存在的標準按鈕；`加入即時監控` 走 `monitor_add_symbol_ui()`，`指定個股分析` 走 `generate_stock_analysis_ui()`。
+
+後續若修改右鍵選單，請保留 `taiwan-monitor-query`、`taiwan-monitor-add`、`taiwan-stock-query`、`taiwan-stock-analysis-submit` 這些 `elem_id`，並維護 `tests/test_core.py::test_context_menu_bridge_components_remain_rendered`。
+
 ### 目前限制
 
 - 官方資料欄位不足時會降低可信度或 fallback mock。

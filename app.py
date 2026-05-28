@@ -70,6 +70,7 @@ CONTEXT_MENU_JS = """
     <button data-action="analysis">指定個股分析</button>
   `;
   document.body.appendChild(menu);
+  let latestContextStock = '';
 
   const extractStock = () => {
     const selection = String(window.getSelection ? window.getSelection() : '').trim();
@@ -83,19 +84,36 @@ CONTEXT_MENU_JS = """
     return '';
   };
 
-  const setTextbox = (value) => {
-    const box = document.querySelector('#taiwan-context-stock textarea, #taiwan-context-stock input');
+  const setTextbox = (selector, value) => {
+    const box = document.querySelector(selector);
     if (!box) return;
-    box.value = value;
+    const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(box), 'value')?.set;
+    if (setter) {
+      setter.call(box, value);
+    } else {
+      box.value = value;
+    }
     box.dispatchEvent(new Event('input', { bubbles: true }));
     box.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+
+  const clickButton = (selector) => {
+    const btn = document.querySelector(selector);
+    if (btn) btn.click();
+  };
+
+  const clickTab = (label) => {
+    const tabs = Array.from(document.querySelectorAll('[role="tab"], button'));
+    const tab = tabs.find((item) => String(item.textContent || '').trim() === label);
+    if (tab) tab.click();
   };
 
   document.addEventListener('contextmenu', (event) => {
     const text = extractStock();
     if (!text || !/[0-9]{4,6}|[\\u4e00-\\u9fff]/.test(text)) return;
     event.preventDefault();
-    setTextbox(text);
+    latestContextStock = text;
+    setTextbox('#taiwan-context-stock textarea, #taiwan-context-stock input', text);
     menu.style.display = 'block';
     menu.style.left = `${event.clientX}px`;
     menu.style.top = `${event.clientY}px`;
@@ -108,12 +126,18 @@ CONTEXT_MENU_JS = """
   menu.addEventListener('click', (event) => {
     const action = event.target && event.target.dataset ? event.target.dataset.action : '';
     if (action === 'monitor') {
-      const btn = document.querySelector('#taiwan-context-add-monitor button');
-      if (btn) btn.click();
+      clickTab('即時監控');
+      window.setTimeout(() => {
+        setTextbox('#taiwan-monitor-query textarea, #taiwan-monitor-query input', latestContextStock);
+        window.setTimeout(() => clickButton('#taiwan-monitor-add'), 100);
+      }, 200);
     }
     if (action === 'analysis') {
-      const btn = document.querySelector('#taiwan-context-stock-analysis button');
-      if (btn) btn.click();
+      clickTab('指定個股分析');
+      window.setTimeout(() => {
+        setTextbox('#taiwan-stock-query textarea, #taiwan-stock-query input', latestContextStock);
+        window.setTimeout(() => clickButton('#taiwan-stock-analysis-submit'), 100);
+      }, 200);
     }
     menu.style.display = 'none';
   });
@@ -556,8 +580,8 @@ def create_app():
                 ranking_json = gr.File(label="下載 JSON")
                 ranking_csv = gr.File(label="下載 CSV")
         with gr.Tab("指定個股分析"):
-            stock_query = gr.Textbox(label="股票名稱或代號", placeholder="例如：2330 或 台積電")
-            stock_btn = gr.Button("產生指定個股分析", variant="primary")
+            stock_query = gr.Textbox(label="股票名稱或代號", placeholder="例如：2330 或 台積電", elem_id="taiwan-stock-query")
+            stock_btn = gr.Button("產生指定個股分析", variant="primary", elem_id="taiwan-stock-analysis-submit")
             stock_md = gr.Markdown()
             stock_json = gr.File(label="下載 JSON")
         with gr.Tab("即時監控"):
@@ -571,10 +595,10 @@ def create_app():
             monitor_timer = gr.Timer(value=30, active=False)
             monitor_active = gr.State(False)
             with gr.Row():
-                monitor_query = gr.Textbox(label="新增監控股票（代號或名稱）", placeholder="例如：2330 或 台積電")
+                monitor_query = gr.Textbox(label="新增監控股票（代號或名稱）", placeholder="例如：2330 或 台積電", elem_id="taiwan-monitor-query")
                 monitor_remove_symbol = gr.Textbox(label="移除代號", placeholder="例如：2330")
             with gr.Row():
-                monitor_add_btn = gr.Button("加入監控", variant="primary")
+                monitor_add_btn = gr.Button("加入監控", variant="primary", elem_id="taiwan-monitor-add")
                 monitor_remove_btn = gr.Button("移除代號")
                 monitor_clear_btn = gr.Button("清空清單", variant="stop")
                 monitor_start_btn = gr.Button("開始 30 秒監控", variant="primary")
@@ -592,9 +616,9 @@ def create_app():
             with gr.Row():
                 backtest_json = gr.File(label="下載 JSON")
                 backtest_csv = gr.File(label="下載 CSV")
-        context_stock = gr.Textbox(visible=False, elem_id="taiwan-context-stock", elem_classes=["context-hidden"])
-        context_add_btn = gr.Button("右鍵加入即時監控", visible=False, elem_id="taiwan-context-add-monitor", elem_classes=["context-hidden"])
-        context_analysis_btn = gr.Button("右鍵指定個股分析", visible=False, elem_id="taiwan-context-stock-analysis", elem_classes=["context-hidden"])
+        context_stock = gr.Textbox(visible=True, elem_id="taiwan-context-stock", elem_classes=["context-hidden"])
+        context_add_btn = gr.Button("右鍵加入即時監控", visible=True, elem_id="taiwan-context-add-monitor", elem_classes=["context-hidden"])
+        context_analysis_btn = gr.Button("右鍵指定個股分析", visible=True, elem_id="taiwan-context-stock-analysis", elem_classes=["context-hidden"])
 
         pre_btn.click(
             lambda p, d, t, e: generate_report_and_ranking_ui("開盤前", p, d, t, e),

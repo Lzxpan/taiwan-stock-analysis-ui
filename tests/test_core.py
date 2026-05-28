@@ -10,6 +10,7 @@ from datetime import datetime
 from taiwan_market_core import MockTaiwanMarketProvider, TAIWAN_MARKET_DISCLAIMER, TaiwanMarketService
 from realtime_monitor import MockRealtimeQuoteProvider, RealtimeMonitorService, TwseMisRealtimeProvider, WatchlistStore
 from app import (
+    create_app,
     generate_ranking_ui,
     generate_report_ui,
     generate_stock_analysis_ui,
@@ -244,3 +245,23 @@ def test_launch_app_uses_gradio_4_compatible_launch_kwargs(tmp_path, monkeypatch
     assert "css" not in fake_demo.launch_kwargs
     assert "js" not in fake_demo.launch_kwargs
     assert fake_demo.launch_kwargs["server_port"] == 7865
+
+
+def test_context_menu_bridge_components_remain_rendered():
+    """功能：確認右鍵選單橋接元件保留在 DOM，否則 JavaScript 找不到按鈕觸發 callback。"""
+    demo = create_app()
+    context_components = {
+        getattr(component, "elem_id", ""): component
+        for component in demo.blocks.values()
+        if str(getattr(component, "elem_id", "")).startswith("taiwan-context-")
+        or str(getattr(component, "elem_id", "")).startswith("taiwan-monitor-")
+        or str(getattr(component, "elem_id", "")).startswith("taiwan-stock-")
+    }
+
+    assert context_components["taiwan-context-stock"].visible is True
+    assert context_components["taiwan-context-add-monitor"].visible is True
+    assert context_components["taiwan-context-stock-analysis"].visible is True
+    assert context_components["taiwan-monitor-query"].visible is True
+    assert context_components["taiwan-monitor-add"].visible is True
+    assert context_components["taiwan-stock-query"].visible is True
+    assert context_components["taiwan-stock-analysis-submit"].visible is True
