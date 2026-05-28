@@ -17,9 +17,17 @@ import gradio as gr
 import pandas as pd
 
 from taiwan_market_core import TAIWAN_MARKET_DISCLAIMER, TaiwanMarketService, create_provider
+from realtime_monitor import (
+    AutoRealtimeQuoteProvider,
+    MockRealtimeQuoteProvider,
+    RealtimeMonitorService,
+    TwseMisRealtimeProvider,
+    WatchlistStore,
+)
 
 
 REPORT_DIR = Path(__file__).resolve().parent / "reports"
+WATCHLIST_PATH = Path(__file__).resolve().parent / "runtime" / "watchlists" / "realtime_monitor.json"
 
 
 def parse_date(value: str | None):
@@ -191,6 +199,83 @@ def generate_backtest_ui(provider_key: str, top_n: int, include_etf: bool, days:
     return summary, table, json_path, csv_path
 
 
+def create_realtime_monitor_service(provider_key: str) -> RealtimeMonitorService:
+    """功能：依 UI 資料來源建立即時監控服務。
+
+    2026/05/28 Steve Peng：新增原因：獨立 Gradio UI 需要最多 50 檔台股即時監控。
+    修改前代碼：UI 只有報告、指定個股分析與回測摘要。
+    修改後功能：支援 TWSE MIS 官方即時行情、mock fallback 與本機 watchlist 保存。
+    """
+    if provider_key == "mock":
+        quote_provider = MockRealtimeQuoteProvider()
+    elif provider_key == "official":
+        quote_provider = TwseMisRealtimeProvider()
+    else:
+        quote_provider = AutoRealtimeQuoteProvider()
+    analysis_key = provider_key if provider_key != "official" else "auto"
+    return RealtimeMonitorService(
+        quote_provider=quote_provider,
+        analysis_service=TaiwanMarketService(create_provider(analysis_key)),
+        watchlist_store=WatchlistStore(WATCHLIST_PATH),
+    )
+
+
+def watchlist_rows(items: Sequence[Dict[str, Any]]) -> pd.DataFrame:
+    """功能：將即時監控清單轉為 UI 表格。"""
+    return pd.DataFrame([{"代號": item.get("symbol", ""), "名稱": item.get("name", ""), "市場": item.get("market", "")} for item in items])
+
+
+def realtime_rows(rows: Sequence[Dict[str, Any]]) -> pd.DataFrame:
+    """功能：將即時行情分析結果轉為 UI 表格。"""
+    return pd.DataFrame(list(rows or []))
+
+
+def format_realtime_alerts(alerts: Sequence[Dict[str, Any]]) -> str:
+    """功能：將即時警示紀錄轉為 Markdown。"""
+    lines = ["## 即時警示紀錄", f"> {TAIWAN_MARKET_DISCLAIMER}", ""]
+    if not alerts:
+        lines.append("尚無警示。")
+        return "\n".join(lines)
+    for item in alerts[-20:]:
+        lines.append(f"- {item.get('time')}｜{item.get('symbol')} {item.get('name')}｜{item.get('message')}")
+    return "\n".join(lines)
+
+
+def monitor_add_symbol_ui(provider_key: str, query: str):
+    """功能：Gradio callback，加入股票到即時監控清單。"""
+    # 2026/05/28 Steve Peng：新增原因：使用者需要輸入股票代號或名稱加入即時監控。
+    # 修改前代碼：沒有監控清單 callback。
+    # 修改後功能：新增最多 50 檔 read-only 監控清單，不接券商或交易執行功能。
+    result = create_realtime_monitor_service(provider_key).add_symbol(query)
+    return result.get("message", ""), watchlist_rows(result.get("items") or [])
+
+
+def monitor_remove_symbol_ui(provider_key: str, symbol: str):
+    """功能：Gradio callback，從即時監控清單移除股票。"""
+    result = create_realtime_monitor_service(provider_key).remove_symbol(symbol)
+    return result.get("message", ""), watchlist_rows(result.get("items") or [])
+
+
+def monitor_clear_watchlist_ui(provider_key: str):
+    """功能：Gradio callback，清空即時監控清單。"""
+    result = create_realtime_monitor_service(provider_key).clear_watchlist()
+    return result.get("message", ""), watchlist_rows(result.get("items") or []), format_realtime_alerts([])
+
+
+def monitor_refresh_ui(provider_key: str):
+    """功能：Gradio callback，刷新即時行情與警示紀錄。"""
+    result = create_realtime_monitor_service(provider_key).refresh()
+    status = result.get("source_status") or {}
+    status_text = (
+        f"更新時間：{result.get('updated_at')}｜資料來源：{status.get('provider', '')}"
+        f"｜fallback：{status.get('fallback_used', False)}｜{status.get('message', '')}"
+    )
+    alerts = result.get("alerts") or []
+    if alerts:
+        gr.Warning(str(alerts[-1].get("message") or "即時監控警示"))
+    return status_text, realtime_rows(result.get("rows") or []), format_realtime_alerts(alerts)
+
+
 def create_app():
     """功能：建立 Gradio Blocks UI。"""
     with gr.Blocks(title="台股資訊分析 GUI") as demo:
@@ -224,6 +309,29 @@ def create_app():
             stock_btn = gr.Button("產生指定個股分析", variant="primary")
             stock_md = gr.Markdown()
             stock_json = gr.File(label="下載 JSON")
+        with gr.Tab("即時監控"):
+            # 2026/05/28 Steve Peng：新增原因：使用者需要在本機 UI 監控最多 50 檔台股即時行情。
+            # 修改前代碼：沒有即時監控、五檔委買委賣與 30 秒更新 UI。
+            # 修改後功能：新增 read-only 監控分頁，只顯示買入觀察、賣出觀察與風險警示。
+            gr.Markdown(
+                "### 台股即時監控\n"
+                f"> {TAIWAN_MARKET_DISCLAIMER}。本分頁僅顯示公開市場資訊、買入觀察、賣出觀察與風險警示。"
+            )
+            monitor_timer = gr.Timer(value=30, active=False)
+            with gr.Row():
+                monitor_query = gr.Textbox(label="新增監控股票（代號或名稱）", placeholder="例如：2330 或 台積電")
+                monitor_remove_symbol = gr.Textbox(label="移除代號", placeholder="例如：2330")
+            with gr.Row():
+                monitor_add_btn = gr.Button("加入監控", variant="primary")
+                monitor_remove_btn = gr.Button("移除代號")
+                monitor_clear_btn = gr.Button("清空清單", variant="stop")
+                monitor_start_btn = gr.Button("開始 30 秒監控", variant="primary")
+                monitor_stop_btn = gr.Button("停止監控")
+                monitor_refresh_btn = gr.Button("立即刷新")
+            monitor_status = gr.Markdown("尚未開始監控。")
+            monitor_watchlist = gr.Dataframe(value=watchlist_rows(create_realtime_monitor_service("mock").load_watchlist()), label="監控清單（最多 50 檔）", wrap=True)
+            monitor_table = gr.Dataframe(label="即時行情與分析", wrap=True)
+            monitor_alerts = gr.Markdown(format_realtime_alerts([]))
         with gr.Tab("回測摘要"):
             days = gr.Slider(5, 180, value=60, step=1, label="回測天數")
             backtest_btn = gr.Button("產生資訊型回測摘要", variant="primary")
@@ -235,6 +343,13 @@ def create_app():
         pre_btn.click(lambda p, d, t, e: generate_report_ui("開盤前", p, d, t, e), inputs=[provider, date_box, top_n, include_etf], outputs=[pre_summary, pre_table, pre_detail, pre_risk, pre_json, pre_csv])
         post_btn.click(lambda p, d, t, e: generate_report_ui("收盤後", p, d, t, e), inputs=[provider, date_box, top_n, include_etf], outputs=[post_summary, post_table, post_detail, post_risk, post_json, post_csv])
         stock_btn.click(generate_stock_analysis_ui, inputs=[provider, stock_query, date_box, include_etf], outputs=[stock_md, stock_json])
+        monitor_add_btn.click(monitor_add_symbol_ui, inputs=[provider, monitor_query], outputs=[monitor_status, monitor_watchlist])
+        monitor_remove_btn.click(monitor_remove_symbol_ui, inputs=[provider, monitor_remove_symbol], outputs=[monitor_status, monitor_watchlist])
+        monitor_clear_btn.click(monitor_clear_watchlist_ui, inputs=[provider], outputs=[monitor_status, monitor_watchlist, monitor_alerts])
+        monitor_refresh_btn.click(monitor_refresh_ui, inputs=[provider], outputs=[monitor_status, monitor_table, monitor_alerts])
+        monitor_timer.tick(monitor_refresh_ui, inputs=[provider], outputs=[monitor_status, monitor_table, monitor_alerts], show_progress="hidden")
+        monitor_start_btn.click(lambda: gr.update(active=True), inputs=None, outputs=monitor_timer)
+        monitor_stop_btn.click(lambda: gr.update(active=False), inputs=None, outputs=monitor_timer)
         backtest_btn.click(generate_backtest_ui, inputs=[provider, top_n, include_etf, days], outputs=[backtest_md, backtest_table, backtest_json, backtest_csv])
     return demo
 

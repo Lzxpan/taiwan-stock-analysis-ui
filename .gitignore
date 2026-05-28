@@ -6,6 +6,8 @@ __pycache__/
 venv/
 env/
 reports/
+# 2026/05/28 Steve Peng：新增原因：即時監控 watchlist 屬本機使用者狀態，不應提交。
+runtime/
 *.log
 .env
 .DS_Store
