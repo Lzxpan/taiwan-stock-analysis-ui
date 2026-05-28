@@ -111,6 +111,15 @@ python app.py
 - 回測使用內建歷史報酬序列或 provider 提供資料，資料不足時可信度有限。
 - Gradio UI 是本機 Web UI，未打包成單一 `.exe`。
 
+### 啟動相容性注意
+
+2026/05/28 Steve Peng：新增本節。
+修改原因：Windows 繁中 locale 與新版相依套件曾造成安裝後無法啟動。
+修改前狀態：`requirements.txt` 沒有 UTF-8 coding cookie，舊版 `pip` 可能以 `cp950` 解碼中文註解並拋出 `UnicodeDecodeError`；未限制 `huggingface_hub` 上限時，`gradio 4.44.1` 會因 `huggingface_hub 1.x` 移除 `HfFolder` 而拋出 `ImportError`；新版 `pydantic` 產出的 API schema 會讓 `gradio_client` 出現 `TypeError: argument of type 'bool' is not iterable`；Gradio 4 的 `launch()` 不接受 `css` / `js` 參數。
+修改後狀態：`requirements.txt` 第一行必須保留 `# -*- coding: utf-8 -*-`，並保留 `huggingface_hub<1.0` 與 `pydantic<2.11`；`run_taiwan_market_ui.cmd` 會設定 `PYTHONUTF8=1`，並在找不到 `pip` 時嘗試 `ensurepip`；UI 樣式與右鍵選單 JavaScript 放在 `gr.Blocks()`。
+
+後續修改依賴時請保留或同步更新 `tests/test_bootstrap.py`，避免重現安裝階段失敗。
+
 ## 7. 主要模組說明
 
 ### `taiwan_market_core.py`
@@ -159,7 +168,7 @@ python app.py
 
 修改注意：
 
-- Gradio 6 的 `css` / `js` 參數放在 `launch()`。
+- Gradio 4 的 `css` / `js` 參數放在 `gr.Blocks()`，不要傳給 `launch()`。
 - 若新增 UI 控制項，請同步 README 操作說明。
 - 若修改即時監控表格欄位，請同步 `render_realtime_table_html()` 測試。
 

@@ -12,7 +12,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Sequence
+from typing import Any, Callable, Dict, Sequence
 
 import gradio as gr
 import pandas as pd
@@ -521,7 +521,7 @@ def _now_taipei_text() -> str:
 
 def create_app():
     """功能：建立 Gradio Blocks UI。"""
-    with gr.Blocks(title="台股資訊分析 GUI") as demo:
+    with gr.Blocks(title="台股資訊分析 GUI", css=CONTEXT_MENU_CSS, js=CONTEXT_MENU_JS) as demo:
         gr.Markdown("# 台股資訊分析與強勢候選股報告")
         gr.Markdown(f"> {TAIWAN_MARKET_DISCLAIMER}。本工具只提供資訊分析與風險提示，不提供交易執行。")
         with gr.Row():
@@ -621,18 +621,26 @@ def create_app():
     return demo
 
 
-if __name__ == "__main__":
+def launch_app(
+    *,
+    demo_factory: Callable[[], Any] = create_app,
+    server_port: int | None = None,
+    inbrowser: bool = True,
+) -> Any:
+    """功能：啟動本機 Gradio UI，並維持 Gradio 4 相容的 launch 參數。"""
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    resolved_port = int(server_port if server_port is not None else os.getenv("GRADIO_SERVER_PORT", "7860"))
+    return demo_factory().launch(
+        server_name="127.0.0.1",
+        server_port=resolved_port,
+        inbrowser=inbrowser,
+        allowed_paths=[str(REPORT_DIR)],
+        show_error=True,
+    )
+
+
+if __name__ == "__main__":
     # 2026/05/27 Steve Peng：修改原因：若 7860 已被其他 Gradio 程序占用，截圖或測試可用環境變數指定臨時 port。
     # 修改前代碼：固定 server_port=7860，遇到 port occupied 會直接啟動失敗。
     # 修改後功能：預設仍使用 7860；可設定 GRADIO_SERVER_PORT=7865 等其他 port。
-    server_port = int(os.getenv("GRADIO_SERVER_PORT", "7860"))
-    create_app().launch(
-        server_name="127.0.0.1",
-        server_port=server_port,
-        inbrowser=True,
-        allowed_paths=[str(REPORT_DIR)],
-        show_error=True,
-        css=CONTEXT_MENU_CSS,
-        js=CONTEXT_MENU_JS,
-    )
+    launch_app()

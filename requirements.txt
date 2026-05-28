@@ -1,5 +1,8 @@
+# -*- coding: utf-8 -*-
 # 2026/05/27 Steve Peng：新增原因：獨立台股分析 GUI 執行所需最小 Python 套件。
 gradio>=4.44.0
+huggingface_hub<1.0
+pydantic<2.11
 pandas>=2.2.0
 requests>=2.32.0
 pytest>=8.0.0

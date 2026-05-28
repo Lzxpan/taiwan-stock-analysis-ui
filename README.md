@@ -74,6 +74,11 @@ python app.py
 
 ## 安裝方式
 
+2026/05/28 Steve Peng：修正啟動失敗。
+修改原因：Windows 繁中 locale 的舊版 `pip` 會用 `cp950` 讀取 `requirements.txt`，遇到 UTF-8 中文註解會出現 `UnicodeDecodeError`；另外 `gradio 4.44.1` 與 `huggingface_hub 1.x` 不相容，會出現 `ImportError: cannot import name 'HfFolder'`；新版 `pydantic` 產出的 API schema 會讓 `gradio_client` 出現 `TypeError: argument of type 'bool' is not iterable`；Gradio 4 的 `launch()` 不接受 `css` / `js` 參數。
+修改前內容：依賴版本與 requirements 編碼未明確鎖定，部分 Windows 環境無法完成套件安裝並啟動 GUI。
+修改後功能：`requirements.txt` 明確宣告 UTF-8，並鎖定 `huggingface_hub<1.0` 與 `pydantic<2.11`；Windows 啟動檔會啟用 UTF-8 並在缺少 `pip` 時嘗試 `ensurepip`；`css` / `js` 已移到 `gr.Blocks()`。
+
 ### 方式一：Windows 雙擊執行
 
 1. 確認電腦已安裝 Python 3.10 或更新版本。
@@ -425,7 +430,7 @@ README 中的截圖就是依上述流程由本機 UI 實際擷取，不是手繪
 
 ```bash
 pytest -q
-python -m compileall app.py taiwan_market_core.py
+python -m compileall app.py taiwan_market_core.py realtime_monitor.py
 ```
 
 ## 常見問題

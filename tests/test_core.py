@@ -14,6 +14,7 @@ from app import (
     generate_report_ui,
     generate_stock_analysis_ui,
     is_taiwan_market_open_now,
+    launch_app,
     monitor_add_symbol_ui,
     monitor_clear_watchlist_ui,
     monitor_refresh_ui,
@@ -221,3 +222,25 @@ def test_market_hours_gate_and_monitor_status(monkeypatch):
     assert stop_timer["active"] is False
     assert stopped_active is False
     assert "停止監控中" in stop_status
+
+
+def test_launch_app_uses_gradio_4_compatible_launch_kwargs(tmp_path, monkeypatch):
+    """功能：確認 Gradio 4 啟動時不把 css/js 傳給 launch，避免 TypeError。"""
+
+    class FakeDemo:
+        def __init__(self):
+            self.launch_kwargs = None
+
+        def launch(self, **kwargs):
+            self.launch_kwargs = kwargs
+            return None
+
+    fake_demo = FakeDemo()
+    monkeypatch.setattr("app.REPORT_DIR", tmp_path)
+
+    launch_app(demo_factory=lambda: fake_demo, server_port=7865, inbrowser=False)
+
+    assert fake_demo.launch_kwargs is not None
+    assert "css" not in fake_demo.launch_kwargs
+    assert "js" not in fake_demo.launch_kwargs
+    assert fake_demo.launch_kwargs["server_port"] == 7865
