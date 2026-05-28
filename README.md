@@ -41,12 +41,36 @@
 
 | 檔案 | 說明 |
 |---|---|
+| `AGENTS.md` | AI 代理接手規範、限制與最短重建流程 |
+| `docs/AI_HANDOFF_CHECKLIST.md` | 完整 AI 交接清冊，供後續 AI 直接接續任務 |
 | `app.py` | Gradio 圖形化介面，啟動後開啟 `http://127.0.0.1:7860` |
 | `taiwan_market_core.py` | 台股分析核心邏輯、資料 provider、排行、報告、指定個股分析與回測 |
 | `run_taiwan_market_ui.cmd` | Windows 雙擊啟動檔 |
 | `requirements.txt` | Python 依賴套件 |
 | `tests/test_core.py` | 核心功能與 GUI callback 測試 |
 | `reports/` | 執行後產生的 JSON / CSV 報告，已加入 `.gitignore` |
+
+## AI 交接文件
+
+2026/05/28 Steve Peng：新增本節。
+修改原因：使用者表示本機工作目錄會刪除，後續任務需要能由其他 AI 只靠 GitHub repo 接手。
+修改前內容：README 沒有集中列出 AI 接手入口。
+修改後功能：提供交接文件索引與重建提醒。
+
+若後續由其他 AI 或開發者接手，請先閱讀：
+
+1. [`AGENTS.md`](AGENTS.md)：AI 代理工作規範、禁止事項、驗證流程。
+2. [`docs/AI_HANDOFF_CHECKLIST.md`](docs/AI_HANDOFF_CHECKLIST.md)：完整交接清冊、環境重建、模組說明、已知限制與後續任務。
+
+本機資料刪除後，可直接從 GitHub 重新 clone：
+
+```bash
+git clone https://github.com/Lzxpan/taiwan-stock-analysis-ui.git
+cd taiwan-stock-analysis-ui
+pip install -r requirements.txt
+python -m pytest -q
+python app.py
+```
 
 ## 安裝方式
 
