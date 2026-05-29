@@ -10,6 +10,8 @@ from datetime import datetime
 from taiwan_market_core import MockTaiwanMarketProvider, TAIWAN_MARKET_DISCLAIMER, TaiwanMarketService
 from realtime_monitor import MockRealtimeQuoteProvider, RealtimeMonitorService, TwseMisRealtimeProvider, WatchlistStore
 from app import (
+    APP_TITLE,
+    APP_VERSION,
     create_app,
     generate_ranking_ui,
     generate_report_ui,
@@ -230,30 +232,52 @@ def test_realtime_monitor_ui_callbacks(tmp_path, monkeypatch):
     assert "尚無警示" in cleared_alerts
 
 
-def test_market_hours_gate_and_monitor_status(monkeypatch):
-    """功能：確認非開盤時間無法啟動即時監控，並顯示停止/監控狀態。"""
+def test_market_hours_gate_and_monitor_status(tmp_path, monkeypatch):
+    """功能：確認監控啟停狀態，且啟動時立即刷新行情資料。"""
+    monkeypatch.setattr("app.WATCHLIST_PATH", tmp_path / "realtime_monitor.json")
+    monitor_add_symbol_ui("mock", "2330")
+
     assert is_taiwan_market_open_now(datetime(2026, 5, 28, 9, 30)) is True
     assert is_taiwan_market_open_now(datetime(2026, 5, 28, 14, 0)) is False
 
     monkeypatch.setattr("app.is_taiwan_market_open_now", lambda: False)
-    start_timer, active, status = monitor_start_ui()
+    start_timer, active, status, start_html, start_alerts = monitor_start_ui("mock")
     refresh_status, refresh_html, _alerts = monitor_refresh_ui("mock")
     assert start_timer["active"] is False
     assert active is False
     assert "非台股一般交易時段" in status
+    assert "尚無即時行情資料" in start_html
+    assert "尚無警示" in start_alerts
     assert "無法啟動即時監控" in refresh_status
     assert "停止監控中" in refresh_status
     assert "尚無即時行情資料" in refresh_html
 
     monkeypatch.setattr("app.is_taiwan_market_open_now", lambda: True)
-    start_timer, active, status = monitor_start_ui()
+    start_timer, active, status, start_html, start_alerts = monitor_start_ui("mock")
     stop_timer, stopped_active, stop_status = monitor_stop_ui()
     assert start_timer["active"] is True
     assert active is True
     assert "即時監控中" in status
+    assert "更新時間" in status
+    assert "taiwan-realtime-table" in start_html
+    assert "即時警示紀錄" in start_alerts
     assert stop_timer["active"] is False
     assert stopped_active is False
     assert "停止監控中" in stop_status
+
+
+def test_app_header_includes_version():
+    """功能：確認 UI 抬頭與瀏覽器標題包含目前版號。"""
+    demo = create_app()
+    markdown_values = [
+        str(getattr(component, "value", ""))
+        for component in demo.blocks.values()
+        if component.__class__.__name__ == "Markdown"
+    ]
+
+    assert APP_VERSION == "V01.001"
+    assert any(APP_TITLE in value for value in markdown_values)
+    assert APP_VERSION in str(getattr(demo, "title", ""))
 
 
 def test_launch_app_uses_gradio_4_compatible_launch_kwargs(tmp_path, monkeypatch):

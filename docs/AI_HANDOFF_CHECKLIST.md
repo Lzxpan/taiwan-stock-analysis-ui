@@ -11,6 +11,7 @@
 |---|---|
 | GitHub repo | `https://github.com/Lzxpan/taiwan-stock-analysis-ui` |
 | 主要分支 | `main` |
+| 目前 GUI 版號 | `V01.001` |
 | 專案類型 | Python + Gradio 本機 Web UI |
 | 啟動方式 | `python app.py` 或雙擊 `run_taiwan_market_ui.cmd` |
 | 預設網址 | `http://127.0.0.1:7860` |
@@ -111,6 +112,15 @@ python app.py
 修改後狀態：右鍵選單會直接切到目標分頁、填入對應 textbox，並點擊已存在的標準按鈕；`加入即時監控` 走 `monitor_add_symbol_ui()`，`指定個股分析` 走 `generate_stock_analysis_ui()`。
 
 後續若修改右鍵選單，請保留 `taiwan-monitor-query`、`taiwan-monitor-add`、`taiwan-stock-query`、`taiwan-stock-analysis-submit` 這些 `elem_id`，並維護 `tests/test_core.py::test_context_menu_bridge_components_remain_rendered`。
+
+### GUI 版號與即時監控啟動刷新
+
+2026/05/29 Steve Peng：新增抬頭版號與修正即時監控啟動刷新。
+修改原因：使用者回報即時監控啟動後沒有更新行情，且要求抬頭名稱加入版號控制，目前為 `V01.001`。
+修改前狀態：`create_app()` 的頁面抬頭與 `gr.Blocks(title=...)` 沒有版號；`monitor_start_ui()` 只回傳 timer active、monitor active、狀態文字，沒有立刻刷新行情表格。
+修改後狀態：`APP_VERSION = "V01.001"`、`APP_TITLE = "台股資訊分析與強勢候選股報告｜V01.001"`；`開始 30 秒監控` 會先執行一次 `monitor_refresh_ui()`，再啟動 30 秒 timer。
+
+後續若調整版號或監控啟動流程，請同步維護 `tests/test_core.py::test_app_header_includes_version` 與 `tests/test_core.py::test_market_hours_gate_and_monitor_status`。
 
 ### 開盤前外部情境評估
 

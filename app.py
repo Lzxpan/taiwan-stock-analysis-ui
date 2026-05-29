@@ -35,6 +35,8 @@ except Exception:  # pragma: no cover - Python 3.9+ normally has zoneinfo.
 REPORT_DIR = Path(__file__).resolve().parent / "reports"
 WATCHLIST_PATH = Path(__file__).resolve().parent / "runtime" / "watchlists" / "realtime_monitor.json"
 MARKET_CLOSED_MESSAGE = "現在非台股一般交易時段（09:00-13:30），無法啟動即時監控。"
+APP_VERSION = "V01.001"
+APP_TITLE = f"台股資訊分析與強勢候選股報告｜{APP_VERSION}"
 
 CONTEXT_MENU_CSS = """
 .context-hidden { display: none !important; }
@@ -529,11 +531,19 @@ def monitor_refresh_state_ui(provider_key: str, is_monitoring: bool):
     return monitor_refresh_ui(provider_key)
 
 
-def monitor_start_ui():
-    """功能：啟動 30 秒即時監控；非開盤時間顯示提示且不啟動 timer。"""
+def monitor_start_ui(provider_key: str = "mock"):
+    """功能：啟動 30 秒即時監控；開盤時間內會先立即刷新一次。"""
     if not is_taiwan_market_open_now():
-        return gr.update(active=False), False, f"{MARKET_CLOSED_MESSAGE}｜目前時間：{_now_taipei_text()}"
-    return gr.update(active=True), True, f"目前狀態：即時監控中，每 30 秒更新一次。｜啟動時間：{_now_taipei_text()}"
+        return (
+            gr.update(active=False),
+            False,
+            f"{MARKET_CLOSED_MESSAGE}｜目前時間：{_now_taipei_text()}",
+            render_realtime_table_html([]),
+            format_realtime_alerts([]),
+        )
+    refresh_status, table_html, alerts_markdown = monitor_refresh_ui(provider_key)
+    status = f"目前狀態：即時監控中，每 30 秒更新一次。｜啟動時間：{_now_taipei_text()}｜{refresh_status}"
+    return gr.update(active=True), True, status, table_html, alerts_markdown
 
 
 def monitor_stop_ui():
@@ -575,8 +585,8 @@ def _now_taipei_text() -> str:
 
 def create_app():
     """功能：建立 Gradio Blocks UI。"""
-    with gr.Blocks(title="台股資訊分析 GUI", css=CONTEXT_MENU_CSS, js=CONTEXT_MENU_JS) as demo:
-        gr.Markdown("# 台股資訊分析與強勢候選股報告")
+    with gr.Blocks(title=APP_TITLE, css=CONTEXT_MENU_CSS, js=CONTEXT_MENU_JS) as demo:
+        gr.Markdown(f"# {APP_TITLE}")
         gr.Markdown(f"> {TAIWAN_MARKET_DISCLAIMER}。本工具只提供資訊分析與風險提示，不提供交易執行。")
         with gr.Row():
             provider = gr.Dropdown(choices=[("auto：官方優先，失敗回退 mock", "auto"), ("official：官方資料", "official"), ("mock：離線示範資料", "mock")], value="auto", label="資料來源")
@@ -667,7 +677,7 @@ def create_app():
         monitor_clear_btn.click(monitor_clear_watchlist_ui, inputs=[provider], outputs=[monitor_status, monitor_watchlist, monitor_table, monitor_alerts])
         monitor_refresh_btn.click(monitor_refresh_ui, inputs=[provider], outputs=[monitor_status, monitor_table, monitor_alerts])
         monitor_timer.tick(monitor_refresh_state_ui, inputs=[provider, monitor_active], outputs=[monitor_status, monitor_table, monitor_alerts], show_progress="hidden")
-        monitor_start_btn.click(monitor_start_ui, inputs=None, outputs=[monitor_timer, monitor_active, monitor_status])
+        monitor_start_btn.click(monitor_start_ui, inputs=[provider], outputs=[monitor_timer, monitor_active, monitor_status, monitor_table, monitor_alerts])
         monitor_stop_btn.click(monitor_stop_ui, inputs=None, outputs=[monitor_timer, monitor_active, monitor_status])
         context_add_btn.click(context_add_monitor_ui, inputs=[provider, context_stock], outputs=[monitor_status, monitor_watchlist])
         context_analysis_btn.click(context_stock_analysis_ui, inputs=[provider, context_stock, date_box, include_etf], outputs=[stock_query, stock_md, stock_json])
