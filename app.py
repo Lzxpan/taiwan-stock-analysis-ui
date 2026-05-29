@@ -35,7 +35,7 @@ except Exception:  # pragma: no cover - Python 3.9+ normally has zoneinfo.
 REPORT_DIR = Path(__file__).resolve().parent / "reports"
 WATCHLIST_PATH = Path(__file__).resolve().parent / "runtime" / "watchlists" / "realtime_monitor.json"
 MARKET_CLOSED_MESSAGE = "現在非台股一般交易時段（09:00-13:30），無法啟動即時監控。"
-APP_VERSION = "V01.002"
+APP_VERSION = "V01.003"
 APP_TITLE = f"台股資訊分析與強勢候選股報告｜{APP_VERSION}"
 
 CONTEXT_MENU_CSS = """
@@ -400,13 +400,12 @@ def create_realtime_monitor_service(provider_key: str) -> RealtimeMonitorService
     if provider_key == "mock":
         quote_provider = MockRealtimeQuoteProvider()
     elif provider_key == "official":
-        quote_provider = TwseMisRealtimeProvider()
+        quote_provider = TwseMisRealtimeProvider(timeout=3.0)
     else:
-        quote_provider = AutoRealtimeQuoteProvider()
-    analysis_key = provider_key if provider_key != "official" else "auto"
+        quote_provider = AutoRealtimeQuoteProvider(official_provider=TwseMisRealtimeProvider(timeout=3.0))
     return RealtimeMonitorService(
         quote_provider=quote_provider,
-        analysis_service=TaiwanMarketService(create_provider(analysis_key)),
+        analysis_service=TaiwanMarketService(create_provider("mock")),
         watchlist_store=WatchlistStore(WATCHLIST_PATH),
     )
 

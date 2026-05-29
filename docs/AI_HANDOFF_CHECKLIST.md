@@ -11,7 +11,7 @@
 |---|---|
 | GitHub repo | `https://github.com/Lzxpan/taiwan-stock-analysis-ui` |
 | 主要分支 | `main` |
-| 目前 GUI 版號 | `V01.002` |
+| 目前 GUI 版號 | `V01.003` |
 | 專案類型 | Python + Gradio 本機 Web UI |
 | 啟動方式 | `python app.py` 或雙擊 `run_taiwan_market_ui.cmd` |
 | 預設網址 | `http://127.0.0.1:7860` |
@@ -128,6 +128,13 @@ python app.py
 修改後狀態：`APP_VERSION = "V01.002"`；即時行情表格改為深色高對比樣式；最新成交價暫缺時顯示 `成交價暫缺`，漲跌幅留空，並在 `資料備註` 標示 `官方最新成交價暫缺`。
 
 後續若修改即時行情表格或 TWSE MIS 欄位解析，請同步維護 `tests/test_core.py::test_realtime_html_marks_trend_with_color_class` 與 `tests/test_core.py::test_realtime_monitor_marks_missing_last_trade_without_fake_drop`。
+
+2026/05/29 Steve Peng：修正即時監控 `Connection errored out`。
+修改原因：使用者回報即時監控刷新時 Gradio 顯示 `Connection errored out`。
+修改前狀態：`create_realtime_monitor_service("auto")` 會建立 `TaiwanMarketService(create_provider("auto"))` 作為監控警示分析來源，`official` 會轉成 `auto`；每次刷新 6 檔 watchlist 時會重新抓官方日資料，實測約 19 到 40 秒。
+修改後狀態：`APP_VERSION = "V01.003"`；即時報價來源仍依 UI 選擇 `TwseMisRealtimeProvider` / `AutoRealtimeQuoteProvider` / `MockRealtimeQuoteProvider`，但 `analysis_service` 固定使用 `TaiwanMarketService(create_provider("mock"))` 作為本機快速觀察區間，實測 `auto` 刷新約 0.37 秒。
+
+後續若要讓即時監控使用官方日資料分析，必須先做快取或背景更新，不可在每次 30 秒刷新同步重打官方日資料端點；請維護 `tests/test_core.py::test_realtime_monitor_uses_fast_local_analysis_for_official_quotes`。
 
 ### 開盤前外部情境評估
 

@@ -14,6 +14,7 @@ from app import (
     APP_VERSION,
     CONTEXT_MENU_CSS,
     create_app,
+    create_realtime_monitor_service,
     generate_ranking_ui,
     generate_report_ui,
     generate_stock_analysis_ui,
@@ -264,6 +265,19 @@ def test_realtime_monitor_ui_callbacks(tmp_path, monkeypatch):
     assert "尚無警示" in cleared_alerts
 
 
+def test_realtime_monitor_uses_fast_local_analysis_for_official_quotes(monkeypatch, tmp_path):
+    """功能：即時監控刷新不可每 30 秒重打官方日資料分析，避免 Gradio callback 逾時。"""
+    monkeypatch.setattr("app.WATCHLIST_PATH", tmp_path / "realtime_monitor.json")
+
+    auto_service = create_realtime_monitor_service("auto")
+    official_service = create_realtime_monitor_service("official")
+
+    assert auto_service.quote_provider.name == "auto_realtime"
+    assert official_service.quote_provider.name == "twse_mis"
+    assert auto_service.analysis_service.provider.name == "mock"
+    assert official_service.analysis_service.provider.name == "mock"
+
+
 def test_market_hours_gate_and_monitor_status(tmp_path, monkeypatch):
     """功能：確認監控啟停狀態，且啟動時立即刷新行情資料。"""
     monkeypatch.setattr("app.WATCHLIST_PATH", tmp_path / "realtime_monitor.json")
@@ -307,7 +321,7 @@ def test_app_header_includes_version():
         if component.__class__.__name__ == "Markdown"
     ]
 
-    assert APP_VERSION == "V01.002"
+    assert APP_VERSION == "V01.003"
     assert any(APP_TITLE in value for value in markdown_values)
     assert APP_VERSION in str(getattr(demo, "title", ""))
 
