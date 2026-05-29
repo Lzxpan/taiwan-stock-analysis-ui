@@ -37,6 +37,11 @@
 - **離線 mock 資料**：無網路時仍可展示 GUI 與完整流程。
 - **官方資料 auto 模式**：嘗試使用 TWSE / TPEx 官方 OpenAPI，失敗時自動回退 mock。
 
+2026/05/29 Steve Peng：強化開盤前評估。
+修改原因：使用者要求開盤前報告納入前一日美股、台期夜盤與前 10 日買賣量/金額走勢，並反映到各股分數與風險。
+修改前內容：開盤前方向主要依台股日資料與候選股量價條件判斷。
+修改後功能：開盤前報告新增 `美股與台期夜盤綜合評估`、`前 10 日買賣量與金額走勢`；候選股表格新增 `開盤前情境調整` 與 `開盤前情境`，強勢分數與風險理由會納入這些資料。
+
 ## 專案檔案說明
 
 | 檔案 | 說明 |
@@ -144,7 +149,7 @@ YYYY-MM-DD
 
 1. 切到 `開盤前報告` 分頁。
 2. 點擊 `產生開盤前報告`。
-3. 查看報告摘要、強勢候選股排行榜、個股明細與風險提示。
+3. 查看報告摘要、美股與台期夜盤綜合評估、前 10 日買賣量/金額走勢、強勢候選股排行榜、個股明細與風險提示。
 4. 可下載 JSON / CSV。
 
 ### 收盤後報告
@@ -294,6 +299,9 @@ Mock provider 的數據不是即時市場資料，僅用於功能展示、UI 驗
 
 - TWSE：`https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL`
 - TPEx：`https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes`
+- TWSE 10 日市場成交資訊：`https://www.twse.com.tw/rwd/zh/afterTrading/FMTQIK`
+- TAIFEX 期貨每日交易行情：`https://openapi.taifex.com.tw/v1/DailyMarketReportFut`
+- 美股主要指數：透過 Yahoo Finance chart 公開端點讀取 `S&P 500`、`Nasdaq`、`Dow Jones`、`Philadelphia Semiconductor`，失敗時使用 mock fallback。
 
 目前 official provider 使用的主要欄位包含：
 

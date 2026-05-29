@@ -9,9 +9,10 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from statistics import mean, pstdev
 from typing import Any, Dict, List, Optional, Sequence
+from urllib.parse import quote
 
 import requests
 
@@ -98,6 +99,9 @@ class MockTaiwanMarketProvider:
             weak_industries=("航運", "觀光"),
             event_notes=("大型權值股偏強", "電子族群成交占比偏高", "仍需留意國際股市與匯率波動"),
         )
+
+    def get_premarket_context(self, as_of: Optional[date] = None) -> Dict[str, Any]:
+        return PremarketContextProvider(mock_only=True).build(as_of=as_of)
 
     @staticmethod
     def _build_default_snapshots() -> List[StockSnapshot]:
@@ -209,6 +213,9 @@ class OfficialTaiwanOpenDataProvider:
             event_notes=("官方 OpenAPI 缺少完整歷史均線與事件欄位，信心分數會偏低。",),
         )
 
+    def get_premarket_context(self, as_of: Optional[date] = None) -> Dict[str, Any]:
+        return PremarketContextProvider().build(as_of=as_of)
+
     @staticmethod
     def _get_json(url: str) -> List[Dict[str, Any]]:
         response = requests.get(url, headers={"User-Agent": "TaiwanStockAnalysisUI/1.0"}, timeout=12)
@@ -306,6 +313,290 @@ class AutoTaiwanMarketProvider:
         except Exception:
             return self.mock.get_market_context(as_of=as_of)
 
+    def get_premarket_context(self, as_of: Optional[date] = None) -> Dict[str, Any]:
+        try:
+            return self.official.get_premarket_context(as_of=as_of)
+        except Exception as exc:
+            context = self.mock.get_premarket_context(as_of=as_of)
+            context["source_status"] = {"provider": "mock", "fallback_used": True, "message": str(exc)}
+            return context
+
+
+class PremarketContextProvider:
+    """功能：建立開盤前用的美股、台期夜盤與 10 日量金額情境。"""
+
+    YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+    TAIFEX_DAILY_FUT_URL = "https://openapi.taifex.com.tw/v1/DailyMarketReportFut"
+    TWSE_TEN_DAY_URL = "https://www.twse.com.tw/rwd/zh/afterTrading/FMTQIK"
+
+    def __init__(self, *, mock_only: bool = False, timeout: float = 10.0):
+        self.mock_only = mock_only
+        self.timeout = timeout
+
+    def build(self, as_of: Optional[date] = None) -> Dict[str, Any]:
+        report_date = as_of or TaiwanMarketService.today_taipei()
+        us_market = self._mock_us_market(report_date) if self.mock_only else self._with_fallback(self._fetch_us_market, self._mock_us_market, report_date)
+        futures = self._mock_taifex_night(report_date) if self.mock_only else self._with_fallback(self._fetch_taifex_night, self._mock_taifex_night, report_date)
+        trend = self._mock_ten_day_trend(report_date) if self.mock_only else self._with_fallback(self._fetch_twse_ten_day_trend, self._mock_ten_day_trend, report_date)
+        composite = self._composite(us_market, futures, trend)
+        return {
+            "source_status": {
+                "provider": "mock" if self.mock_only else "external_with_fallback",
+                "fallback_used": bool(us_market.get("fallback_used") or futures.get("fallback_used") or trend.get("fallback_used")),
+                "message": "開盤前情境使用外部公開資料；失敗項目會以 mock 保守估算。" if not self.mock_only else "使用 mock 開盤前情境資料。",
+            },
+            "us_market": us_market,
+            "taiwan_futures_night": futures,
+            "ten_day_trading_trend": trend,
+            "composite": composite,
+        }
+
+    @staticmethod
+    def _with_fallback(fetcher: Any, fallback: Any, report_date: date) -> Dict[str, Any]:
+        try:
+            return fetcher(report_date)
+        except Exception as exc:
+            data = fallback(report_date)
+            data["fallback_used"] = True
+            data["message"] = f"外部資料讀取失敗，使用保守 fallback：{exc}"
+            return data
+
+    def _fetch_us_market(self, report_date: date) -> Dict[str, Any]:
+        symbols = [
+            ("S&P 500", "^GSPC", 0.35),
+            ("Nasdaq", "^IXIC", 0.25),
+            ("Dow Jones", "^DJI", 0.15),
+            ("Philadelphia Semiconductor", "^SOX", 0.25),
+        ]
+        items: List[Dict[str, Any]] = []
+        for name, symbol, weight in symbols:
+            payload = self._get_json(self.YAHOO_CHART_URL.format(symbol=quote(symbol, safe="")), params={"range": "7d", "interval": "1d"})
+            result = (payload.get("chart") or {}).get("result") or []
+            if not result:
+                continue
+            row = result[0]
+            timestamps = row.get("timestamp") or []
+            closes = ((row.get("indicators") or {}).get("quote") or [{}])[0].get("close") or []
+            points = [(ts, close) for ts, close in zip(timestamps, closes) if close]
+            if len(points) < 2:
+                continue
+            previous_close = float(points[-2][1])
+            last_close = float(points[-1][1])
+            change_pct = round((last_close / previous_close - 1.0) * 100.0, 2) if previous_close > 0 else 0.0
+            items.append(
+                {
+                    "name": name,
+                    "symbol": symbol,
+                    "as_of": datetime.fromtimestamp(points[-1][0]).date().isoformat(),
+                    "close": round(last_close, 2),
+                    "change_pct": change_pct,
+                    "weight": weight,
+                }
+            )
+        if not items:
+            raise TaiwanMarketProviderError("美股資料沒有可用指數")
+        weighted_change = round(sum(item["change_pct"] * item["weight"] for item in items), 2)
+        direction = self._direction_from_score(weighted_change, threshold=0.35)
+        return {
+            "source": "Yahoo Finance chart",
+            "fallback_used": False,
+            "as_of": items[0]["as_of"],
+            "items": items,
+            "weighted_change_pct": weighted_change,
+            "direction": direction,
+            "summary": f"美股主要指數加權漲跌約 {weighted_change:+.2f}%，訊號 {direction}。",
+        }
+
+    def _fetch_taifex_night(self, report_date: date) -> Dict[str, Any]:
+        rows = self._get_json(self.TAIFEX_DAILY_FUT_URL)
+        candidates = [
+            row for row in rows
+            if row.get("Contract") == "TX"
+            and row.get("TradingSession") == "盤後"
+            and "/" not in str(row.get("ContractMonth(Week)") or "")
+            and self._to_float(row.get("Last")) > 0
+        ]
+        if not candidates:
+            raise TaiwanMarketProviderError("TAIFEX 沒有可用 TX 盤後資料")
+        row = max(candidates, key=lambda item: self._to_float(item.get("Volume")))
+        change_pct = self._to_float(str(row.get("%") or "").replace("%", ""))
+        return {
+            "source": "TAIFEX OpenAPI DailyMarketReportFut",
+            "fallback_used": False,
+            "contract": "TX",
+            "contract_month": row.get("ContractMonth(Week)"),
+            "date": self._yyyymmdd_to_iso(row.get("Date")),
+            "open": self._to_float(row.get("Open")),
+            "high": self._to_float(row.get("High")),
+            "low": self._to_float(row.get("Low")),
+            "last": self._to_float(row.get("Last")),
+            "change": self._to_float(row.get("Change")),
+            "change_pct": change_pct,
+            "volume": int(self._to_float(row.get("Volume"))),
+            "direction": self._direction_from_score(change_pct, threshold=0.3),
+            "summary": f"台期夜盤 TX {row.get('ContractMonth(Week)')} 收 {row.get('Last')}，漲跌 {change_pct:+.2f}%，成交量 {row.get('Volume')} 口。",
+        }
+
+    def _fetch_twse_ten_day_trend(self, report_date: date) -> Dict[str, Any]:
+        rows: List[Dict[str, Any]] = []
+        for month_start in self._month_starts(report_date, months=2):
+            payload = self._get_json(self.TWSE_TEN_DAY_URL, params={"date": month_start.strftime("%Y%m%d"), "response": "json"})
+            for row in payload.get("data") or []:
+                parsed_date = self._roc_date_to_iso(row[0])
+                if parsed_date and parsed_date <= report_date.isoformat():
+                    rows.append(
+                        {
+                            "date": parsed_date,
+                            "trading_volume": int(self._to_float(row[1])),
+                            "trading_amount": int(self._to_float(row[2])),
+                            "trades": int(self._to_float(row[3])),
+                            "taiex_close": self._to_float(row[4]),
+                            "taiex_change": self._to_float(row[5]),
+                        }
+                    )
+        unique = {row["date"]: row for row in rows}
+        items = [unique[key] for key in sorted(unique)][-10:]
+        if len(items) < 5:
+            raise TaiwanMarketProviderError("TWSE 10 日市場成交資訊不足")
+        return self._trend_payload(items, source="TWSE FMTQIK", fallback_used=False)
+
+    def _mock_us_market(self, report_date: date) -> Dict[str, Any]:
+        items = [
+            {"name": "S&P 500", "symbol": "^GSPC", "as_of": (report_date - timedelta(days=1)).isoformat(), "close": 6280.4, "change_pct": 0.42, "weight": 0.35},
+            {"name": "Nasdaq", "symbol": "^IXIC", "as_of": (report_date - timedelta(days=1)).isoformat(), "close": 20940.2, "change_pct": 0.58, "weight": 0.25},
+            {"name": "Dow Jones", "symbol": "^DJI", "as_of": (report_date - timedelta(days=1)).isoformat(), "close": 45120.6, "change_pct": 0.18, "weight": 0.15},
+            {"name": "Philadelphia Semiconductor", "symbol": "^SOX", "as_of": (report_date - timedelta(days=1)).isoformat(), "close": 7010.8, "change_pct": 0.76, "weight": 0.25},
+        ]
+        weighted_change = round(sum(item["change_pct"] * item["weight"] for item in items), 2)
+        direction = self._direction_from_score(weighted_change, threshold=0.35)
+        return {"source": "mock_us_market", "fallback_used": self.mock_only, "as_of": items[0]["as_of"], "items": items, "weighted_change_pct": weighted_change, "direction": direction, "summary": f"美股主要指數加權漲跌約 {weighted_change:+.2f}%，訊號 {direction}。"}
+
+    def _mock_taifex_night(self, report_date: date) -> Dict[str, Any]:
+        change_pct = 0.68
+        return {
+            "source": "mock_taifex_night",
+            "fallback_used": self.mock_only,
+            "contract": "TX",
+            "contract_month": report_date.strftime("%Y%m"),
+            "date": (report_date - timedelta(days=1)).isoformat(),
+            "open": 40520.0,
+            "high": 40980.0,
+            "low": 40480.0,
+            "last": 40880.0,
+            "change": 276.0,
+            "change_pct": change_pct,
+            "volume": 88000,
+            "direction": self._direction_from_score(change_pct, threshold=0.3),
+            "summary": f"台期夜盤 TX 收 40880，漲跌 {change_pct:+.2f}%，成交量 88000 口。",
+        }
+
+    def _mock_ten_day_trend(self, report_date: date) -> Dict[str, Any]:
+        days = self._recent_business_days(report_date, count=10)
+        items = []
+        for idx, day in enumerate(days):
+            items.append(
+                {
+                    "date": day.isoformat(),
+                    "trading_volume": int(9_800_000_000 + idx * 180_000_000),
+                    "trading_amount": int(420_000_000_000 + idx * 12_500_000_000),
+                    "trades": int(3_000_000 + idx * 55_000),
+                    "taiex_close": round(39000 + idx * 145.0, 2),
+                    "taiex_change": round(-120 + idx * 28.0, 2),
+                }
+            )
+        return self._trend_payload(items, source="mock_twse_ten_day", fallback_used=self.mock_only)
+
+    def _trend_payload(self, items: List[Dict[str, Any]], *, source: str, fallback_used: bool) -> Dict[str, Any]:
+        recent = items[-3:]
+        previous = items[:-3] or items[:1]
+        recent_volume = mean(item["trading_volume"] for item in recent)
+        previous_volume = mean(item["trading_volume"] for item in previous)
+        recent_amount = mean(item["trading_amount"] for item in recent)
+        previous_amount = mean(item["trading_amount"] for item in previous)
+        volume_change_pct = round((recent_volume / previous_volume - 1.0) * 100.0, 2) if previous_volume else 0.0
+        amount_change_pct = round((recent_amount / previous_amount - 1.0) * 100.0, 2) if previous_amount else 0.0
+        index_change_points = round(items[-1]["taiex_close"] - items[0]["taiex_close"], 2) if items else 0.0
+        direction = self._direction_from_score((volume_change_pct * 0.25) + (amount_change_pct * 0.35) + (index_change_points / 1000.0), threshold=1.0)
+        return {
+            "source": source,
+            "fallback_used": fallback_used,
+            "items": items[-10:],
+            "volume_change_pct": volume_change_pct,
+            "amount_change_pct": amount_change_pct,
+            "index_change_points": index_change_points,
+            "direction": direction,
+            "summary": f"近 3 日均量較前段變化 {volume_change_pct:+.2f}%，均額變化 {amount_change_pct:+.2f}%，10 日指數變化 {index_change_points:+.2f} 點。",
+        }
+
+    @staticmethod
+    def _composite(us_market: Dict[str, Any], futures: Dict[str, Any], trend: Dict[str, Any]) -> Dict[str, Any]:
+        us_score = float(us_market.get("weighted_change_pct") or 0.0)
+        futures_score = float(futures.get("change_pct") or 0.0)
+        trend_score = (float(trend.get("amount_change_pct") or 0.0) / 10.0) + (float(trend.get("index_change_points") or 0.0) / 2500.0)
+        score = round(us_score * 0.35 + futures_score * 0.45 + trend_score * 0.20, 2)
+        direction = PremarketContextProvider._direction_from_score(score, threshold=0.35)
+        return {
+            "score": score,
+            "direction": direction,
+            "summary": f"美股 {us_market.get('direction')}、台期夜盤 {futures.get('direction')}、10 日量價 {trend.get('direction')}，綜合評估 {direction}（分數 {score:+.2f}）。",
+        }
+
+    def _get_json(self, url: str, params: Optional[Dict[str, str]] = None) -> Any:
+        response = requests.get(url, params=params, headers={"User-Agent": "TaiwanStockAnalysisUI/1.0"}, timeout=self.timeout)
+        response.raise_for_status()
+        return response.json()
+
+    @staticmethod
+    def _direction_from_score(score: float, *, threshold: float) -> str:
+        if score >= threshold:
+            return "偏多"
+        if score <= -threshold:
+            return "偏空"
+        return "中性"
+
+    @staticmethod
+    def _to_float(value: Any) -> float:
+        match = re.search(r"[-+]?\d+(?:\.\d+)?", str(value or "").replace(",", ""))
+        return float(match.group(0)) if match else 0.0
+
+    @staticmethod
+    def _yyyymmdd_to_iso(value: Any) -> str:
+        text = str(value or "")
+        if re.fullmatch(r"\d{8}", text):
+            return f"{text[:4]}-{text[4:6]}-{text[6:8]}"
+        return text
+
+    @staticmethod
+    def _roc_date_to_iso(value: Any) -> str:
+        match = re.fullmatch(r"(\d{2,3})/(\d{2})/(\d{2})", str(value or ""))
+        if not match:
+            return ""
+        year = int(match.group(1)) + 1911
+        return f"{year:04d}-{int(match.group(2)):02d}-{int(match.group(3)):02d}"
+
+    @staticmethod
+    def _month_starts(report_date: date, *, months: int) -> List[date]:
+        starts = []
+        year = report_date.year
+        month = report_date.month
+        for _ in range(months):
+            starts.append(date(year, month, 1))
+            month -= 1
+            if month == 0:
+                year -= 1
+                month = 12
+        return starts
+
+    @staticmethod
+    def _recent_business_days(report_date: date, *, count: int) -> List[date]:
+        days = []
+        cursor = report_date - timedelta(days=1)
+        while len(days) < count:
+            if cursor.weekday() < 5:
+                days.append(cursor)
+            cursor -= timedelta(days=1)
+        return list(reversed(days))
+
 
 def create_provider(name: str):
     """功能：依名稱建立資料 provider。"""
@@ -330,18 +621,26 @@ class TaiwanMarketService:
             if not self.universe_exclusion_reasons(item, include_etf=include_etf)
         ]
 
-    def rank_candidates(self, *, top_n: int = 20, include_etf: bool = False, as_of: Optional[date] = None) -> List[Dict[str, Any]]:
+    def rank_candidates(
+        self,
+        *,
+        top_n: int = 20,
+        include_etf: bool = False,
+        as_of: Optional[date] = None,
+        premarket_context: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
         """功能：計算強勢分數並回傳前 N 檔候選股。"""
-        rows = [self.candidate_payload(item) for item in self.build_universe(include_etf=include_etf, as_of=as_of)]
+        rows = [self.candidate_payload(item, premarket_context=premarket_context) for item in self.build_universe(include_etf=include_etf, as_of=as_of)]
         rows.sort(key=lambda row: (row["strength_score"], row["confidence_score"], row["liquidity"]["turnover"]), reverse=True)
         return rows[: max(1, int(top_n or 20))]
 
     def generate_report(self, session: str, *, top_n: int = 20, include_etf: bool = False, as_of: Optional[date] = None) -> Dict[str, Any]:
         """功能：產生開盤前或收盤後資訊報告。"""
         report_date = as_of or self.today_taipei()
-        context = self.provider.get_market_context(as_of=report_date)
-        candidates = self.rank_candidates(top_n=top_n, include_etf=include_etf, as_of=report_date)
         normalized_session = "post_market" if str(session).startswith("post") else "pre_market"
+        context = self.provider.get_market_context(as_of=report_date)
+        premarket_context = self.premarket_context(report_date) if normalized_session == "pre_market" else None
+        candidates = self.rank_candidates(top_n=top_n, include_etf=include_etf, as_of=report_date, premarket_context=premarket_context)
         report = {
             "disclaimer": TAIWAN_MARKET_DISCLAIMER,
             "provider": self.provider.name,
@@ -349,12 +648,14 @@ class TaiwanMarketService:
             "session": normalized_session,
             "report_date": report_date.isoformat(),
             "timezone": TAIPEI_TZ_NAME,
-            "today_market_direction": self.market_direction(context),
-            "direction_basis": self.direction_basis(context),
+            "today_market_direction": self.adjusted_market_direction(self.market_direction(context), premarket_context),
+            "direction_basis": self.direction_basis(context) + self.premarket_direction_basis(premarket_context),
             "top_candidates": candidates,
             "risk_reference": self.risk_reference(),
             "manual_only_notice": "本工具只提供資訊分析與風險提示，實際買賣請自行到券商系統人工操作。",
         }
+        if premarket_context is not None:
+            report["premarket_context"] = premarket_context
         if normalized_session == "post_market":
             report.update(
                 {
@@ -367,6 +668,12 @@ class TaiwanMarketService:
                 }
             )
         return report
+
+    def premarket_context(self, report_date: date) -> Dict[str, Any]:
+        """功能：取得開盤前專用外部情境；provider 不支援時使用 mock。"""
+        if hasattr(self.provider, "get_premarket_context"):
+            return dict(self.provider.get_premarket_context(as_of=report_date) or {})
+        return PremarketContextProvider(mock_only=True).build(as_of=report_date)
 
     def analyze_stock(self, query: str, *, include_etf: bool = True, as_of: Optional[date] = None) -> Dict[str, Any]:
         """功能：依股票代號或名稱片段分析指定個股現況。
@@ -461,16 +768,20 @@ class TaiwanMarketService:
             }
         return {"disclaimer": TAIWAN_MARKET_DISCLAIMER, "provider": self.provider.name, "metrics": metrics, "top_candidates_snapshot": [{k: v for k, v in row.items() if not k.startswith("_")} for row in candidates]}
 
-    def candidate_payload(self, item: StockSnapshot) -> Dict[str, Any]:
+    def candidate_payload(self, item: StockSnapshot, premarket_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """功能：將單檔 snapshot 轉成候選股分析欄位。"""
         score_parts = self.score_parts(item)
-        strength = round(sum(score_parts.values()), 2)
+        premarket_adjustment, premarket_reasons = self.premarket_score_adjustment(item, premarket_context)
+        strength = round(self.clamp(sum(score_parts.values()) + premarket_adjustment, 0, 100), 2)
         confidence = self.confidence_score(item)
         risk_level, risks = self.risk_level_and_reasons(item)
+        risk_level, risks = self.apply_premarket_risk(risk_level, risks, premarket_adjustment, premarket_context)
         liquidity = self.liquidity_level(item)
         chasing = "不適合追高" if risk_level == "High" or self.day_change_pct(item) > 7 else "僅適合回檔觀察"
         if strength >= 78 and risk_level == "Low":
             chasing = "可觀察但不建議無風控追高"
+        primary_reasons = self.primary_reasons(item, score_parts)
+        primary_reasons.extend(premarket_reasons)
         return {
             "code": item.code,
             "name": item.name,
@@ -484,11 +795,88 @@ class TaiwanMarketService:
             "take_profit_observe_range": [round(item.close * 1.08, 2), round(item.close * 1.18, 2)],
             "max_observe_position_pct": self.max_position_pct(risk_level, liquidity),
             "liquidity": {"level": liquidity, "volume": int(item.volume), "turnover": int(item.turnover), "volume_vs_20d": round(item.volume / item.volume_ma20, 2) if item.volume_ma20 > 0 else None},
-            "primary_reasons": self.primary_reasons(item, score_parts),
+            "primary_reasons": primary_reasons,
             "primary_risks": risks,
             "chasing_suitability": chasing,
             "event_risk": list(item.event_risks) if item.event_risks else ["尚未發現重大事件風險；仍需自行確認官方公告。"],
+            "premarket_score_adjustment": premarket_adjustment,
+            "premarket_context_reasons": premarket_reasons,
+            "premarket_context": self.premarket_candidate_context(premarket_context),
             "_historical_returns": list(item.historical_returns),
+        }
+
+    def premarket_score_adjustment(self, item: StockSnapshot, premarket_context: Optional[Dict[str, Any]]) -> tuple[float, List[str]]:
+        """功能：依美股、台期夜盤與 10 日量金額趨勢調整單檔強勢分數。"""
+        if not premarket_context:
+            return 0.0, []
+        composite = premarket_context.get("composite") or {}
+        us_market = premarket_context.get("us_market") or {}
+        futures = premarket_context.get("taiwan_futures_night") or {}
+        trend = premarket_context.get("ten_day_trading_trend") or {}
+        industry_beta = self.premarket_industry_beta(item)
+        composite_score = float(composite.get("score") or 0.0)
+        futures_change = float(futures.get("change_pct") or 0.0)
+        us_change = float(us_market.get("weighted_change_pct") or 0.0)
+        amount_change = float(trend.get("amount_change_pct") or 0.0)
+        adjustment = self.clamp(
+            (composite_score * 2.2 * industry_beta)
+            + (futures_change * 0.9)
+            + (us_change * 0.8 * industry_beta)
+            + (amount_change / 18.0),
+            -8.0,
+            8.0,
+        )
+        adjustment = round(adjustment, 2)
+        reasons = [
+            f"開盤前情境調整 {adjustment:+.2f} 分：{composite.get('summary', '資料不足')}",
+        ]
+        if industry_beta > 1.0:
+            reasons.append(f"{item.industry} 對美股科技/半導體與台期夜盤敏感度較高，外部情境權重提高。")
+        return adjustment, reasons
+
+    @staticmethod
+    def premarket_industry_beta(item: StockSnapshot) -> float:
+        """功能：依產業估算開盤前外部情境敏感度。"""
+        text = f"{item.industry} {item.name}".lower()
+        if any(keyword.lower() in text for keyword in ["半導體", "IC", "AI", "PCB", "伺服器", "散熱", "網通", "電子"]):
+            return 1.25
+        if any(keyword in text for keyword in ["金融", "傳產", "消費", "觀光"]):
+            return 0.85
+        return 1.0
+
+    @staticmethod
+    def apply_premarket_risk(
+        risk_level: str,
+        risks: List[str],
+        premarket_adjustment: float,
+        premarket_context: Optional[Dict[str, Any]],
+    ) -> tuple[str, List[str]]:
+        """功能：開盤前外部情境偏空時提高風險提示。"""
+        if not premarket_context:
+            return risk_level, risks
+        composite_direction = (premarket_context.get("composite") or {}).get("direction")
+        futures_change = float((premarket_context.get("taiwan_futures_night") or {}).get("change_pct") or 0.0)
+        us_change = float((premarket_context.get("us_market") or {}).get("weighted_change_pct") or 0.0)
+        if premarket_adjustment <= -3.0 or composite_direction == "偏空" or futures_change <= -1.0 or us_change <= -1.0:
+            risks = list(risks) + ["開盤前外部情境偏弱，美股、台期夜盤或 10 日量金額趨勢可能提高開盤波動風險。"]
+            if risk_level == "Low":
+                risk_level = "Medium"
+            elif risk_level == "Medium":
+                risk_level = "High"
+        return risk_level, risks
+
+    @staticmethod
+    def premarket_candidate_context(premarket_context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """功能：輸出候選股可追溯的開盤前情境欄位。"""
+        if not premarket_context:
+            return {}
+        return {
+            "composite_direction": (premarket_context.get("composite") or {}).get("direction"),
+            "composite_score": (premarket_context.get("composite") or {}).get("score"),
+            "us_weighted_change_pct": (premarket_context.get("us_market") or {}).get("weighted_change_pct"),
+            "taiwan_futures_night_change_pct": (premarket_context.get("taiwan_futures_night") or {}).get("change_pct"),
+            "ten_day_amount_change_pct": (premarket_context.get("ten_day_trading_trend") or {}).get("amount_change_pct"),
+            "ten_day_volume_change_pct": (premarket_context.get("ten_day_trading_trend") or {}).get("volume_change_pct"),
         }
 
     def score_parts(self, item: StockSnapshot) -> Dict[str, float]:
@@ -652,6 +1040,36 @@ class TaiwanMarketService:
             "強勢族群：" + "、".join(context.strong_industries),
             "弱勢族群：" + "、".join(context.weak_industries),
         ]
+
+    @staticmethod
+    def premarket_direction_basis(premarket_context: Optional[Dict[str, Any]]) -> List[str]:
+        """功能：把美股、台期夜盤與 10 日量金額趨勢納入開盤前依據。"""
+        if not premarket_context:
+            return []
+        us_market = premarket_context.get("us_market") or {}
+        futures = premarket_context.get("taiwan_futures_night") or {}
+        trend = premarket_context.get("ten_day_trading_trend") or {}
+        composite = premarket_context.get("composite") or {}
+        return [
+            f"美股前一交易日：{us_market.get('summary', '資料不足')}",
+            f"台期夜盤：{futures.get('summary', '資料不足')}",
+            f"前 10 日買賣量與金額：{trend.get('summary', '資料不足')}",
+            f"開盤前綜合評估：{composite.get('summary', '資料不足')}",
+        ]
+
+    @staticmethod
+    def adjusted_market_direction(base_direction: str, premarket_context: Optional[Dict[str, Any]]) -> str:
+        """功能：依開盤前外部情境調整大盤方向文字。"""
+        if not premarket_context:
+            return base_direction
+        direction = (premarket_context.get("composite") or {}).get("direction")
+        if direction not in {"偏多", "偏空"}:
+            return base_direction
+        if base_direction == "中性震盪":
+            return direction
+        if base_direction != direction:
+            return "中性震盪"
+        return base_direction
 
     @staticmethod
     def liquidity_level(item: StockSnapshot) -> str:

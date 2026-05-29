@@ -112,6 +112,15 @@ python app.py
 
 後續若修改右鍵選單，請保留 `taiwan-monitor-query`、`taiwan-monitor-add`、`taiwan-stock-query`、`taiwan-stock-analysis-submit` 這些 `elem_id`，並維護 `tests/test_core.py::test_context_menu_bridge_components_remain_rendered`。
 
+### 開盤前外部情境評估
+
+2026/05/29 Steve Peng：強化開盤前報告與候選股評分。
+修改原因：使用者要求開盤前報告納入前一日美股、台期夜盤與前 10 日買賣量/金額走勢，並把這些資料加入各股分數與風險評估。
+修改前狀態：開盤前方向主要依台股日資料與候選股量價條件判斷，候選股分數未反映隔夜外部市場與近期大盤量價金額趨勢。
+修改後狀態：`TaiwanMarketService.generate_report()` 在 `pre_market` 模式會建立 `premarket_context`，摘要新增 `美股與台期夜盤綜合評估`、`前 10 日買賣量與金額走勢`；候選股新增 `premarket_score_adjustment`、`premarket_context_reasons`、`premarket_context`，UI 表格新增 `開盤前情境調整` 與 `開盤前情境`。
+
+後續若修改開盤前評分，請同步維護 `PremarketContextProvider`、`candidate_payload()`、`rank_candidates()`、`summary_markdown()`、`candidate_rows()`，並維護 `tests/test_core.py::test_pre_market_report_includes_global_and_ten_day_trend_context` 與 `tests/test_core.py::test_post_market_report_does_not_include_pre_market_context`。
+
 ### 目前限制
 
 - 官方資料欄位不足時會降低可信度或 fallback mock。
@@ -188,6 +197,9 @@ python app.py
 - TWSE OpenAPI：`https://openapi.twse.com.tw/`
 - TPEx OpenAPI：`https://www.tpex.org.tw/openapi/`
 - TWSE MIS 基本市況報導：`https://mis.twse.com.tw/`
+- TWSE 10 日市場成交資訊：`https://www.twse.com.tw/rwd/zh/afterTrading/FMTQIK`
+- TAIFEX 期貨每日交易行情：`https://openapi.taifex.com.tw/v1/DailyMarketReportFut`
+- Yahoo Finance chart 公開端點：讀取 `S&P 500`、`Nasdaq`、`Dow Jones`、`Philadelphia Semiconductor` 開盤前外部情境。
 - Mock provider：repo 內建離線示範資料，不需要 API key。
 
 注意事項：

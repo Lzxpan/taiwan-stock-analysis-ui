@@ -38,6 +38,35 @@ def test_rank_candidates_and_report_are_read_only():
         assert forbidden not in text
 
 
+def test_pre_market_report_includes_global_and_ten_day_trend_context():
+    """功能：確認開盤前報告納入美股、台期夜盤與前 10 日買賣量/金額走勢。"""
+    service = TaiwanMarketService(MockTaiwanMarketProvider())
+
+    report = service.generate_report("pre_market", top_n=5)
+    context = report["premarket_context"]
+
+    assert context["us_market"]["items"]
+    assert context["taiwan_futures_night"]["contract"] == "TX"
+    assert len(context["ten_day_trading_trend"]["items"]) == 10
+    assert report["top_candidates"][0]["premarket_score_adjustment"] != 0
+    assert report["top_candidates"][0]["premarket_context_reasons"]
+    assert "premarket_context" in report["top_candidates"][0]
+    assert "美股" in context["composite"]["summary"]
+    assert "台期夜盤" in context["composite"]["summary"]
+    assert any("美股" in item for item in report["direction_basis"])
+    assert any("台期夜盤" in item for item in report["direction_basis"])
+    assert any("10 日" in item for item in report["direction_basis"])
+
+
+def test_post_market_report_does_not_include_pre_market_context():
+    """功能：確認收盤後報告不混入開盤前專用情境評估。"""
+    service = TaiwanMarketService(MockTaiwanMarketProvider())
+
+    report = service.generate_report("post_market", top_n=5)
+
+    assert "premarket_context" not in report
+
+
 def test_stock_analysis_by_symbol_and_name():
     """功能：確認指定個股可用代號或名稱查詢。"""
     service = TaiwanMarketService(MockTaiwanMarketProvider())
@@ -60,6 +89,8 @@ def test_gradio_callbacks_write_download_files(tmp_path, monkeypatch):
     stock_markdown, stock_json = generate_stock_analysis_ui("mock", "2330", "", False)
 
     assert "台股資訊分析報告" in summary
+    assert "美股與台期夜盤綜合評估" in summary
+    assert "前 10 日買賣量與金額走勢" in summary
     assert len(table) == 5
     assert "個股明細" in detail
     assert "風險提示" in risk

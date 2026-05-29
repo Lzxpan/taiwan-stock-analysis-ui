@@ -170,8 +170,10 @@ def candidate_rows(candidates: Sequence[Dict[str, Any]]) -> pd.DataFrame:
                 "市場": item.get("market", ""),
                 "產業": item.get("industry", ""),
                 "強勢分數": item.get("strength_score", 0),
+                "開盤前情境調整": item.get("premarket_score_adjustment", 0),
                 "信心分數": item.get("confidence_score", 0),
                 "風險等級": item.get("risk_level", ""),
+                "開盤前情境": "；".join(map(str, item.get("premarket_context_reasons") or [])),
                 "觀察買入區間": range_text(item.get("observe_entry_price_range")),
                 "停損觀察價位": item.get("stop_loss_observe_price", ""),
                 "停利/賣出觀察區間": range_text(item.get("take_profit_observe_range")),
@@ -201,6 +203,34 @@ def summary_markdown(report: Dict[str, Any]) -> str:
     lines.append("")
     lines.append("## 依據")
     lines.extend([f"- {item}" for item in report.get("direction_basis", [])])
+    premarket = report.get("premarket_context") or {}
+    if premarket:
+        us_market = premarket.get("us_market") or {}
+        futures = premarket.get("taiwan_futures_night") or {}
+        trend = premarket.get("ten_day_trading_trend") or {}
+        composite = premarket.get("composite") or {}
+        lines.extend(
+            [
+                "",
+                "## 美股與台期夜盤綜合評估",
+                f"- 綜合方向：{composite.get('direction', '')}，分數：{composite.get('score', '')}",
+                f"- 綜合說明：{composite.get('summary', '')}",
+                f"- 美股：{us_market.get('summary', '')}",
+                f"- 台期夜盤：{futures.get('summary', '')}",
+            ]
+        )
+        if us_market.get("items"):
+            lines.append("- 美股指數：")
+            for item in us_market.get("items") or []:
+                lines.append(f"  - {item.get('name')}：{item.get('change_pct')}%（收 {item.get('close')}，{item.get('as_of')}）")
+        lines.extend(["", "## 前 10 日買賣量與金額走勢", f"- 趨勢摘要：{trend.get('summary', '')}"])
+        if trend.get("items"):
+            lines.append("| 日期 | 買賣量（成交股數） | 買賣金額（成交金額） | 加權指數 | 漲跌點 |")
+            lines.append("|---|---:|---:|---:|---:|")
+            for item in trend.get("items") or []:
+                lines.append(
+                    f"| {item.get('date')} | {int(item.get('trading_volume') or 0):,} | {int(item.get('trading_amount') or 0):,} | {item.get('taiex_close')} | {item.get('taiex_change')} |"
+                )
     lines.append("")
     lines.append(report.get("manual_only_notice", ""))
     return "\n".join(lines)
