@@ -35,21 +35,21 @@ except Exception:  # pragma: no cover - Python 3.9+ normally has zoneinfo.
 REPORT_DIR = Path(__file__).resolve().parent / "reports"
 WATCHLIST_PATH = Path(__file__).resolve().parent / "runtime" / "watchlists" / "realtime_monitor.json"
 MARKET_CLOSED_MESSAGE = "現在非台股一般交易時段（09:00-13:30），無法啟動即時監控。"
-APP_VERSION = "V01.001"
+APP_VERSION = "V01.002"
 APP_TITLE = f"台股資訊分析與強勢候選股報告｜{APP_VERSION}"
 
 CONTEXT_MENU_CSS = """
 .context-hidden { display: none !important; }
-.taiwan-realtime-table-wrap { overflow-x: auto; border: 1px solid #e5e7eb; border-radius: 8px; }
-.taiwan-realtime-table { width: 100%; border-collapse: collapse; min-width: 1480px; font-size: 13px; }
-.taiwan-realtime-table th { background: #f8fafc; color: #0f172a; text-align: left; padding: 8px; border-bottom: 1px solid #e5e7eb; white-space: nowrap; }
-.taiwan-realtime-table td { padding: 8px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
-.taiwan-realtime-table tr.trend-up { background: #fff1f2; }
-.taiwan-realtime-table tr.trend-down { background: #f0fdf4; }
-.taiwan-realtime-table tr.trend-flat { background: #ffffff; }
-.trend-up-text { color: #dc2626; font-weight: 700; }
-.trend-down-text { color: #16a34a; font-weight: 700; }
-.trend-flat-text { color: #334155; font-weight: 700; }
+.taiwan-realtime-table-wrap { overflow-x: auto; border: 1px solid #334155; border-radius: 8px; background: #0b1220; }
+.taiwan-realtime-table { width: 100%; border-collapse: collapse; min-width: 1480px; font-size: 13px; color: #e5e7eb !important; background: #0b1220; }
+.taiwan-realtime-table th { background: #132238; color: #f8fafc !important; text-align: left; padding: 8px; border-bottom: 1px solid #475569; white-space: nowrap; }
+.taiwan-realtime-table td { color: #e5e7eb !important; padding: 8px; border-bottom: 1px solid #1f2937; vertical-align: top; }
+.taiwan-realtime-table tr.trend-up { background: #3b1720; }
+.taiwan-realtime-table tr.trend-down { background: #0f2f25; }
+.taiwan-realtime-table tr.trend-flat { background: #111827; }
+.trend-up-text { color: #fca5a5 !important; font-weight: 700; }
+.trend-down-text { color: #86efac !important; font-weight: 700; }
+.trend-flat-text { color: #cbd5e1 !important; font-weight: 700; }
 .level-cell { white-space: normal; min-width: 260px; line-height: 1.55; }
 #taiwan-context-menu {
   position: fixed; z-index: 99999; display: none; min-width: 190px;
@@ -457,7 +457,10 @@ def render_realtime_table_html(rows: Sequence[Dict[str, Any]]) -> str:
     header = "".join(f"<th>{html.escape(column)}</th>" for column in columns)
     body: list[str] = []
     for row in rows:
-        change_pct = float(row.get("漲跌幅%") or 0)
+        try:
+            change_pct = float(row.get("漲跌幅%") or 0)
+        except (TypeError, ValueError):
+            change_pct = 0.0
         row_class = "trend-up" if change_pct > 0 else "trend-down" if change_pct < 0 else "trend-flat"
         trend_class = "trend-up-text" if change_pct > 0 else "trend-down-text" if change_pct < 0 else "trend-flat-text"
         cells: list[str] = []

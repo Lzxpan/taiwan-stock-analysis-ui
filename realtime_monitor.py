@@ -57,7 +57,7 @@ class RealtimeQuote:
     @property
     def change_pct(self) -> float:
         """功能：計算即時漲跌幅百分比。"""
-        if self.previous_close <= 0:
+        if self.last_price <= 0 or self.previous_close <= 0:
             return 0.0
         return round((self.last_price / self.previous_close - 1.0) * 100.0, 2)
 
@@ -438,14 +438,15 @@ class RealtimeMonitorService:
         messages = self._observation_messages(quote, observation)
         messages.extend(self._risk_messages(quote, analysis))
         status = "；".join(messages) if messages else "持續觀察"
+        has_last_price = quote.last_price > 0
         row = {
             "代號": quote.symbol,
             "名稱": item.get("name") or quote.name,
             "市場": item.get("market") or quote.market,
             "時間": quote.timestamp,
-            "最新價": quote.last_price,
-            "漲跌幅%": quote.change_pct,
-            "趨勢": self._trend_label(quote.change_pct),
+            "最新價": quote.last_price if has_last_price else "成交價暫缺",
+            "漲跌幅%": quote.change_pct if has_last_price else "",
+            "趨勢": self._trend_label(quote.change_pct) if has_last_price else "成交價暫缺",
             "即時成交量": quote.latest_volume,
             "累積成交量": quote.accumulated_volume,
             "買一到買五價量": self._levels_text(quote.bid_prices, quote.bid_volumes, "買"),
@@ -585,6 +586,8 @@ class RealtimeMonitorService:
         if last_price <= 0 and float(previous.get("last_price") or 0) > 0:
             last_price = float(previous["last_price"])
             notes.append("最新價沿用上一筆有效資料")
+        elif last_price <= 0:
+            notes.append("官方最新成交價暫缺")
         if latest_volume <= 0 and int(previous.get("latest_volume") or 0) > 0:
             latest_volume = int(previous["latest_volume"])
             notes.append("即時成交量沿用上一筆有效資料")

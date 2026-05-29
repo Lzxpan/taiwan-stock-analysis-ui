@@ -12,6 +12,7 @@ from realtime_monitor import MockRealtimeQuoteProvider, RealtimeMonitorService, 
 from app import (
     APP_TITLE,
     APP_VERSION,
+    CONTEXT_MENU_CSS,
     create_app,
     generate_ranking_ui,
     generate_report_ui,
@@ -192,6 +193,35 @@ def test_realtime_monitor_keeps_last_valid_price_and_volume(tmp_path):
     assert "沿用上一筆有效資料" in row["資料備註"]
 
 
+def test_realtime_monitor_marks_missing_last_trade_without_fake_drop(tmp_path):
+    """功能：官方最新成交價暫缺時，不顯示 0.0 或 -100% 誤導使用者。"""
+    store = WatchlistStore(tmp_path / "realtime_monitor.json")
+    service = RealtimeMonitorService(
+        quote_provider=MockRealtimeQuoteProvider(
+            overrides={
+                "2330": {
+                    "last_price": 0.0,
+                    "previous_close": 100.0,
+                    "latest_volume": 0,
+                    "quality": "low_confidence",
+                    "message": "官方即時資料欄位不足，已標示低可信度。",
+                }
+            }
+        ),
+        analysis_service=TaiwanMarketService(MockTaiwanMarketProvider()),
+        watchlist_store=store,
+    )
+    assert service.add_symbol("2330")["status"] == "added"
+
+    row = service.refresh()["rows"][0]
+
+    assert row["最新價"] == "成交價暫缺"
+    assert row["漲跌幅%"] == ""
+    assert row["趨勢"] == "成交價暫缺"
+    assert "-100" not in str(row)
+    assert "官方最新成交價暫缺" in row["資料備註"]
+
+
 def test_realtime_html_marks_trend_with_color_class():
     """功能：確認即時行情 HTML 用紅綠 class 與文字標示漲跌趨勢。"""
     html = render_realtime_table_html(
@@ -208,6 +238,8 @@ def test_realtime_html_marks_trend_with_color_class():
     assert "上漲" in html
     assert "下跌" in html
     assert "買一 價 600 / 量 10張" in html
+    assert "color: #e5e7eb !important" in CONTEXT_MENU_CSS
+    assert "background: #132238" in CONTEXT_MENU_CSS
 
 
 def test_realtime_monitor_ui_callbacks(tmp_path, monkeypatch):
@@ -275,7 +307,7 @@ def test_app_header_includes_version():
         if component.__class__.__name__ == "Markdown"
     ]
 
-    assert APP_VERSION == "V01.001"
+    assert APP_VERSION == "V01.002"
     assert any(APP_TITLE in value for value in markdown_values)
     assert APP_VERSION in str(getattr(demo, "title", ""))
 

@@ -11,7 +11,7 @@
 |---|---|
 | GitHub repo | `https://github.com/Lzxpan/taiwan-stock-analysis-ui` |
 | 主要分支 | `main` |
-| 目前 GUI 版號 | `V01.001` |
+| 目前 GUI 版號 | `V01.002` |
 | 專案類型 | Python + Gradio 本機 Web UI |
 | 啟動方式 | `python app.py` 或雙擊 `run_taiwan_market_ui.cmd` |
 | 預設網址 | `http://127.0.0.1:7860` |
@@ -121,6 +121,13 @@ python app.py
 修改後狀態：`APP_VERSION = "V01.001"`、`APP_TITLE = "台股資訊分析與強勢候選股報告｜V01.001"`；`開始 30 秒監控` 會先執行一次 `monitor_refresh_ui()`，再啟動 30 秒 timer。
 
 後續若調整版號或監控啟動流程，請同步維護 `tests/test_core.py::test_app_header_includes_version` 與 `tests/test_core.py::test_market_hours_gate_and_monitor_status`。
+
+2026/05/29 Steve Peng：修正即時行情表格在深色主題下看似無資料。
+修改原因：使用者回報即時監控仍沒有資料；截圖顯示行情列存在，但表格文字與淺色漲跌列底在深色 Gradio 主題下對比過低，且 TWSE MIS 最新成交價暫缺時會誤顯示 `0.0` / `-100%`。
+修改前狀態：`.taiwan-realtime-table tr.trend-up/down/flat` 使用淺色背景，`td` 未強制深色主題文字色；`RealtimeQuote.change_pct` 未排除 `last_price <= 0`，`_build_row()` 直接顯示 `quote.last_price`。
+修改後狀態：`APP_VERSION = "V01.002"`；即時行情表格改為深色高對比樣式；最新成交價暫缺時顯示 `成交價暫缺`，漲跌幅留空，並在 `資料備註` 標示 `官方最新成交價暫缺`。
+
+後續若修改即時行情表格或 TWSE MIS 欄位解析，請同步維護 `tests/test_core.py::test_realtime_html_marks_trend_with_color_class` 與 `tests/test_core.py::test_realtime_monitor_marks_missing_last_trade_without_fake_drop`。
 
 ### 開盤前外部情境評估
 
